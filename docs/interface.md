@@ -1,5 +1,7 @@
 # Interface
 
+**Goal: Make it easy for people to compile, run, and debug code on the web.** There's a lot of complexity inherit in all three of these things–we'll focus on providing a simple interface that's good enough for most users.
+
 ## Desiderata
 
 The interface we should provide should:
@@ -12,4 +14,82 @@ The interface we should provide should:
 * Provide a debugging interface which allows:
   - Reading/modifying which breakpoint locations have been set
   - Stepping into, out of, or over the current stop point
-  - On break, reading the stack trace with the state of locals for each frame
+  - On break, reading the stack trace with the state of locals for each frame 
+
+
+## Usage
+
+Here's a few examples of how the library would look:
+
+```ts
+/**
+ * Creates a C runtime. 
+ * 
+ * Note that this is an async function as it may need to do some initialization of WASM modules, etc.
+ * Question: can this method be made synchronous?? Nicer interface
+ */
+const runtime = await Runtime.create("c");
+
+/**
+ * The `fs` field controls the *initial* filesystem that the code will be invoked on. 
+ * It will not update dynamically as the program modifies its own filesystem.
+ */
+runtime.fs = { "main.c": "int main() { /* ... */ }" };
+
+runtime.stdout.pipeTo(console.log);
+runtime.stdin.write("haha ");
+
+/** 
+ * Compiles, links, and runs the program to completion
+ * Awaiting it means we won't go past this line until its finished executing.
+ */
+await runtime.run();
+
+/**
+ * Calling `run` multiple times in a row without awaiting it will do nothing.
+ */
+runtime.run();
+runtime.run();
+runtime.run();
+
+/**
+ * However, runtimes are re-usable between runs.
+ */
+await runtime.run();
+await runtime.run();
+
+/**
+ * `stop` kills the on-going execution so it can be used again.
+ */
+runtime.start();
+runtime.stop();
+
+/**
+ * `stop` does nothing if it's already stopped
+ */
+runtime.stop();
+
+/** Error handling */
+
+const result = await runtime.run();
+console.log(result.success);          // false
+console.log(result.stage);            // preparing, compiling, linking, running
+console.log(result.error);            // Error(...) 
+
+/**
+ * Debugger interface
+ */
+runtime.debugger.setBreakpoint("main.c:1");
+runtime.debugger.onBreakpoint(bp => console.log(bp.locals));
+
+runtime.debugger.pause();     // Pause wherever we are currently executing
+runtime.debugger.resume();    // Keep going after a breakpoint was hit
+
+runtime.debugger.stepInto();  // Steps into, assuming we are paused
+runtime.debugger.stepOut();   // Steps out, assuming we are paused
+runtime.debugger.step();      // Steps to next line, assuming we are paused
+```
+
+
+
+
