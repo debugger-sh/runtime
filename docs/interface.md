@@ -16,7 +16,6 @@ The interface we should provide should:
   - Stepping into, out of, or over the current stop point
   - On break, reading the stack trace with the state of locals for each frame 
 
-
 ## Usage
 
 Here's a few examples of how the library would look:
@@ -32,7 +31,7 @@ const runtime = await Runtime.create("c");
 
 /**
  * The `fs` field controls the *initial* filesystem that the code will be invoked on. 
- * It will not update dynamically as the program modifies its own filesystem.
+ * It will not update dynamically as the program modifies its own filesystem while running.
  */
 runtime.fs = { "main.c": "int main() { /* ... */ }" };
 
@@ -54,18 +53,19 @@ runtime.run();
 
 /**
  * However, runtimes are re-usable between runs.
+ * This causes the code to be run twice:
  */
 await runtime.run();
 await runtime.run();
 
 /**
- * `stop` kills the on-going execution so it can be used again.
+ * `stop` kills the on-going execution, enabling it to be ran again.
  */
-runtime.start();
+runtime.run();
 runtime.stop();
 
 /**
- * `stop` does nothing if it's already stopped
+ * `stop` does nothing if the runtime is already stopped
  */
 runtime.stop();
 
