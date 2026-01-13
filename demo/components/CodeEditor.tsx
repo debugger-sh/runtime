@@ -60,7 +60,6 @@ export default function CodeEditor() {
     setIsRunning(true);
 
     try {
-      // console.log(runtime);
       await Runtime.create('c');
 
       // Placeholder: Simulate API call
