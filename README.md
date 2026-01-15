@@ -4,22 +4,12 @@ WebAssembly compiler and runtime
 
 ## Getting Started
 
-1. Install Rust
-
-```sh
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-```
-
-2. Add `~/.cargo/bin` to your `PATH` (e.g. in `~/.zshrc`).
-
-```sh
-export PATH="$PATH:~/.cargo/bin"
-```
-
-3. Install `wasm-bindgen-cli`
+> Requires [Cargo 1.91+](https://crates.io/) and [Node v22+](https://nodejs.org/en). Make sure that `~/.cargo/bin` is added to your `PATH`.
 
 ```sh
 cargo install wasm-pack
+npm install
+npm run build
 ```
 
 ## Documentation
