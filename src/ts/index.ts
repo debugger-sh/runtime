@@ -1,5 +1,4 @@
-import init, * as wasm from '../../pkg/runtime.js';
-import wasmBinary from '../../pkg/runtime_bg.wasm';
+import RustWorker from './worker?worker&inline';
 
 export type Lang = 'c';
 
@@ -23,8 +22,9 @@ export class Runtime {
     // worker.onmessage = (result) => console.log(result);
     // throw new Error(lang);
 
-    await init(wasmBinary);
-    wasm.main();
+    const worker = new RustWorker();
+    worker.onmessage = (e) => console.log(e);
+
     throw new Error(lang);
   }
 
