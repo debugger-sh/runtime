@@ -23,7 +23,11 @@ export class Runtime {
     // throw new Error(lang);
 
     const worker = new RustWorker();
-    worker.onmessage = (e) => console.log(e);
+    await new Promise<void>((resolve) => {
+      worker.onmessage = (e) => e.data.length === 0 && resolve();
+    });
+
+    /** At this point in the code, the worker is ready to receive messages */
 
     throw new Error(lang);
   }
