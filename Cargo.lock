@@ -1929,9 +1929,12 @@ dependencies = [
 name = "runtime"
 version = "0.1.0"
 dependencies = [
+ "flate2",
+ "futures",
  "js-sys",
  "serde",
  "serde-wasm-bindgen",
+ "tar",
  "tsify",
  "wasm-bindgen",
  "wasm-bindgen-futures",

@@ -1,21 +1,31 @@
+use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tsify::Tsify; // takes the Rust types and generates TypeScript definitions
+use std::io::{Cursor, Read};
+use tar::Archive;
+use tsify::Tsify;
 use wasm_bindgen::{JsCast, prelude::*};
-use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
-use wasmer::{Instance, Module, Store, Value, imports};
+use wasmer::{Module, Store};
 use wasmer_wasix::WasiEnv;
+use wasmer_wasix::virtual_fs::{AsyncWriteExt, FileSystem, mem_fs};
 use web_sys::{DedicatedWorkerGlobalScope, MessageEvent};
 
-#[derive(Tsify, Serialize, Deserialize)]
+const CLANG_WASM_URL: &str = "https://runno.dev/langs/clang.wasm";
+const CLANG_SYSROOT_URL: &str = "https://runno.dev/langs/clang-fs.tar.gz";
+
+// ============================================================================
+// Types
+// ============================================================================
+
+#[derive(Debug, Tsify, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum FsNode {
     File(String),
     Dir(HashMap<String, FsNode>),
 }
 
-#[derive(Tsify, Serialize, Deserialize)]
+#[derive(Debug, Tsify, Serialize, Deserialize)]
 pub struct WorkerStart {
     fs: HashMap<String, FsNode>,
 }
@@ -29,43 +39,96 @@ pub enum WorkerOut {
     Stdout { data: String },
 }
 
-async fn get_url(url: &str) -> Result<Vec<u8>, JsValue> {
-    // use websys to get the binary from a link
-    web_sys::console::log_1(&"Fetching  binary...".into());
+// ============================================================================
+// Helpers
+// ============================================================================
 
-    // https://docs.rs/web-sys/latest/web_sys/struct.DedicatedWorkerGlobalScope.html#method.fetch_with_str
+async fn fetch_bytes(url: &str) -> Result<Vec<u8>, JsValue> {
     let scope = DedicatedWorkerGlobalScope::from(JsValue::from(js_sys::global()));
-    let resp_value = JsFuture::from(scope.fetch_with_str(&url)).await?;
-    let resp = resp_value.dyn_into::<web_sys::Response>()?;
-    let array_buffer = JsFuture::from(resp.array_buffer()?).await?;
-    let uint8_array = js_sys::Uint8Array::new(&array_buffer);
-    let bytes = uint8_array.to_vec();
-    Ok(bytes)
+    let response: web_sys::Response = JsFuture::from(scope.fetch_with_str(url))
+        .await?
+        .dyn_into()?;
+    let buffer = JsFuture::from(response.array_buffer()?).await?;
+    Ok(js_sys::Uint8Array::new(&buffer).to_vec())
 }
 
-async fn start(msg: WorkerStart) {
-    web_sys::console::log_2(
-        &"Started!".into(),
-        // the following line serializes the Fs structure back to JS for logging
-        // it returns a Result<JsValue>, so we unwrap it with expect
-        &serde_wasm_bindgen::to_value(&msg.fs).expect("serialization worked"),
-    );
+fn extract_tar_gz(data: Vec<u8>) -> Result<HashMap<String, Vec<u8>>, std::io::Error> {
+    let decoder = GzDecoder::new(Cursor::new(data));
+    let mut archive = Archive::new(decoder);
 
-    /* Fetch a binary using web sys */
-    let binary_url = "https://runno.dev/langs/clang.wasm";
-    let sysroot_url = "https://runno.dev/langs/clang-fs.tar.gz";
-    let binary = get_url(binary_url).await.expect("Failed to fetch binary");
-    let sysroot = get_url(sysroot_url).await.expect("Failed to fetch sysroot");
+    archive
+        .entries()?
+        .map(
+            |entry: Result<tar::Entry<'_, GzDecoder<Cursor<Vec<u8>>>>, std::io::Error>| {
+                let mut entry = entry?;
+                let path = entry.path()?.to_path_buf();
+                let mut contents = Vec::new();
+                entry.read_to_end(&mut contents)?;
+                Ok((path.to_string_lossy().into_owned(), contents))
+            },
+        )
+        .collect::<Result<HashMap<String, Vec<u8>>, std::io::Error>>()
+}
+
+// ============================================================================
+// Worker
+// ============================================================================
+
+async fn start(msg: WorkerStart) {
+    web_sys::console::log_1(&format!("Started! {:?}", msg).into());
+
+    // Parallelizes the two fetches
+    let (clang_wasm_bytes, sysroot_bytes) =
+        futures::try_join!(fetch_bytes(CLANG_WASM_URL), fetch_bytes(CLANG_SYSROOT_URL),)
+            .expect("Failed to fetch binaries");
 
     let mut store = Store::default();
 
     // Need to pass bytes to Module::from_binary
     // https://wasmerio.github.io/wasmer/crates/doc/wasmer/struct.Module.html
-    let clang_binary = Module::from_binary(&store, &binary)
-        .expect("Failed to create module from binary");
+    let clang_binary =
+        Module::from_binary(&store, &clang_wasm_bytes).expect("Failed to compile clang module");
 
-    // Set up WASI environment
-    WasiEnv::builder("clang").instantiate(clang_binary, &mut store);
+    let sysroot_map = extract_tar_gz(sysroot_bytes).expect("Failed to extract sysroot");
+
+    // TODO (DEBUG): Remove this
+    for (path, _) in &sysroot_map {
+        web_sys::console::log_1(&format!("File: {:?}", path).into());
+    }
+
+    let fs = mem_fs::FileSystem::default();
+
+    // Write the files into the virtual filesystem
+    for (path, contents) in sysroot_map {
+        let abs_path = format!("/{}", path);
+
+        if let Some(parent) = std::path::Path::new(&abs_path).parent() {
+            let mut current = std::path::PathBuf::from("/");
+            for component in parent.components().skip(1) {
+                current.push(component);
+                let _ = fs.create_dir(&current);
+            }
+        }
+
+        // TODO (DEBUG): Remove this
+        web_sys::console::log_1(&format!("Creating file: {:?}", abs_path).into());
+
+        let mut file = fs
+            .new_open_options()
+            .create(true)
+            .write(true)
+            .open(&abs_path)
+            .expect("Failed to create file");
+        file.write(&contents).await.expect("Failed to write file");
+    }
+
+    // Must call instatiate after writing files
+    let (instance, env) = WasiEnv::builder("clang")
+        .fs(Box::new(fs)) // Mount the virtual filesystem
+        .preopen_dir("/") // Preopen root so clang can access files
+        .expect("preopen failed")
+        .instantiate(clang_binary, &mut store)
+        .expect("Failed to instantiate WASI");
 }
 
 #[wasm_bindgen]
@@ -78,7 +141,8 @@ pub fn main() {
     let onmessage = Closure::wrap(Box::new(move |msg: MessageEvent| {
         web_sys::console::log_1(&"got message".into());
         let message: WorkerStart = serde_wasm_bindgen::from_value(msg.data()).expect("");
-        start(message);
+        // rust-ism: spawn_local is used to run the start function in a new thread
+        wasm_bindgen_futures::spawn_local(start(message));
     }) as Box<dyn Fn(MessageEvent)>);
     scope.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
     onmessage.forget();
