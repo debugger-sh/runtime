@@ -10,8 +10,8 @@ use wasm_bindgen::{JsCast, prelude::*};
 use wasm_bindgen_futures::JsFuture;
 use wasmer::{Module, Store};
 use wasmer_wasix::WasiEnv;
-use wasmer_wasix::virtual_fs::create_dir_all;
 use wasmer_wasix::virtual_fs::{AsyncWriteExt, FileSystem, mem_fs};
+use wasmer_wasix::virtual_fs::{OpenOptionsConfig, create_dir_all};
 use web_sys::{DedicatedWorkerGlobalScope, MessageEvent};
 
 use wasmer_wasix::{
@@ -19,6 +19,9 @@ use wasmer_wasix::{
     runners::wasi::{RuntimeOrEngine, WasiRunner},
 };
 
+use crate::console::ConsoleFile;
+
+mod console;
 mod runtime;
 
 const CLANG_WASM_URL: &str = "https://runno.dev/langs/clang.wasm";
@@ -77,7 +80,9 @@ async fn extract_tar_gz(data: Vec<u8>) -> Result<mem_fs::FileSystem, std::io::Er
             fs.create_dir(&abs_path)
                 .expect("Failed to create directory")
         } else {
-            create_dir_all(&fs, &abs_path).expect("Failed to create parent directories");
+            if let Some(parent) = abs_path.parent() {
+                create_dir_all(&fs, &parent).expect("Failed to create parent directories");
+            }
             let mut file = fs
                 .new_open_options()
                 .create(true)
@@ -105,9 +110,11 @@ async fn inject_files(
                 .create(true)
                 .write(true)
                 .open(base_path)?;
+            web_sys::console::log_1(&format!("Injecting file at {:?}", base_path).into());
             file.write_all(contents.as_bytes())
                 .await
                 .expect("Failed to write injected file");
+            file.flush().await.expect("Flushed file")
         }
         FsNode::Dir(children) => {
             create_dir_all(fs, base_path)?;
@@ -150,35 +157,42 @@ async fn start(msg: WorkerStart) {
         .await
         .expect("Failed to inject user files into mem_fs");
 
+    web_sys::console::log_1(&format!("FS: {:?}", fs).into());
+
     // Must call instatiate after writing files
-    let (instance, env) = WasiEnv::builder("clang")
+    let mut builder = WasiEnv::builder("clang")
         .runtime(runtime::JsRuntime::instance())
         .fs(Box::new(fs)) // Mount the virtual filesystem
         .args(&[
-            "--version",
-            // "clang",
-            // "-cc1",
-            // "-Werror",
-            // "-emit-obj",
-            // "-disable-free",
-            // "-isysroot",
-            // "/sys",
-            // "-internal-isystem",
-            // "/sys/include/c++/v1",
-            // "-internal-isystem",
-            // "/sys/include",
-            // "-internal-isystem",
-            // "/sys/lib/clang/8.0.1/include",
-            // "-ferror-limit",
-            // "4",
-            // "-fmessage-length",
-            // "80",
-            // "-fcolor-diagnostics",
-            // "-O2",
-            // "-x",
-            // "c++",
-            // "main.c",
+            // "--version",
+            "-cc1",
+            "-Werror",
+            "-emit-obj",
+            "-disable-free",
+            "-isysroot",
+            "/sys",
+            "-internal-isystem",
+            "/sys/include/c++/v1",
+            "-internal-isystem",
+            "/sys/include",
+            "-internal-isystem",
+            "/sys/lib/clang/8.0.1/include",
+            "-ferror-limit",
+            "4",
+            "-fmessage-length",
+            "80",
+            "-fcolor-diagnostics",
+            "-O2",
+            "-x",
+            "c++",
+            "/main.c",
         ])
+        .stdout(Box::new(ConsoleFile::default()))
+        .stderr(Box::new(ConsoleFile::default()));
+
+    builder.add_preopen_dir("/").expect("preopen");
+
+    let (instance, env) = builder
         .instantiate(clang_binary, &mut store)
         .expect("Failed to instantiate WASI");
 
