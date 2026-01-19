@@ -14,6 +14,11 @@ use wasmer_wasix::virtual_fs::create_dir_all;
 use wasmer_wasix::virtual_fs::{AsyncWriteExt, FileSystem, mem_fs};
 use web_sys::{DedicatedWorkerGlobalScope, MessageEvent};
 
+use wasmer_wasix::{
+    Pipe,
+    runners::wasi::{RuntimeOrEngine, WasiRunner},
+};
+
 mod runtime;
 
 const CLANG_WASM_URL: &str = "https://runno.dev/langs/clang.wasm";
@@ -149,7 +154,31 @@ async fn start(msg: WorkerStart) {
     let (instance, env) = WasiEnv::builder("clang")
         .runtime(runtime::JsRuntime::instance())
         .fs(Box::new(fs)) // Mount the virtual filesystem
-        .args(&["clang", "/main.c"])
+        .args(&[
+            "--version",
+            // "clang",
+            // "-cc1",
+            // "-Werror",
+            // "-emit-obj",
+            // "-disable-free",
+            // "-isysroot",
+            // "/sys",
+            // "-internal-isystem",
+            // "/sys/include/c++/v1",
+            // "-internal-isystem",
+            // "/sys/include",
+            // "-internal-isystem",
+            // "/sys/lib/clang/8.0.1/include",
+            // "-ferror-limit",
+            // "4",
+            // "-fmessage-length",
+            // "80",
+            // "-fcolor-diagnostics",
+            // "-O2",
+            // "-x",
+            // "c++",
+            // "main.c",
+        ])
         .instantiate(clang_binary, &mut store)
         .expect("Failed to instantiate WASI");
 
@@ -159,6 +188,8 @@ async fn start(msg: WorkerStart) {
         .expect("Failed to find _start function");
 
     start.call(&mut store, &[]).expect("Failed to run _start");
+
+    let fs = env.data(&store).fs_root();
 
     // Print out the filesystem toplevel for debugging
     let root = fs

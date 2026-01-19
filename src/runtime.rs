@@ -82,6 +82,7 @@ impl VirtualTaskManager for UnsupportedTaskManager {
         &self,
         _time: Duration,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + Sync + 'static>> {
+        web_sys::console::log_1(&"VirtualTaskManager::sleep_now called.".into());
         Box::pin(ready(()))
     }
 
@@ -93,6 +94,7 @@ impl VirtualTaskManager for UnsupportedTaskManager {
             dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> + Send + 'static,
         >,
     ) -> Result<(), WasiThreadError> {
+        web_sys::console::log_1(&"VirtualTaskManager::task_shared called.".into());
         Err(WasiThreadError::Unsupported)
     }
 
@@ -100,6 +102,7 @@ impl VirtualTaskManager for UnsupportedTaskManager {
     /// pulled from the worker pool that has a stateful thread local variable
     /// It is ok for this task to block execution and any async futures within its scope
     fn task_wasm(&self, _task: TaskWasm<'_>) -> Result<(), WasiThreadError> {
+        web_sys::console::log_1(&"VirtualTaskManager::task_wasm called.".into());
         Err(WasiThreadError::Unsupported)
     }
 
@@ -110,11 +113,13 @@ impl VirtualTaskManager for UnsupportedTaskManager {
         &self,
         _task: Box<dyn FnOnce() + Send + 'static>,
     ) -> Result<(), WasiThreadError> {
+        web_sys::console::log_1(&"VirtualTaskManager::task_dedicated called.".into());
         Err(WasiThreadError::Unsupported)
     }
 
     /// Returns the amount of parallelism that is possible on this platform
     fn thread_parallelism(&self) -> Result<usize, WasiThreadError> {
+        web_sys::console::log_1(&"VirtualTaskManager::thread_parallelism called.".into());
         Err(WasiThreadError::Unsupported)
     }
 
@@ -123,6 +128,7 @@ impl VirtualTaskManager for UnsupportedTaskManager {
         _module: wasmer::Module,
         _task: Box<dyn FnOnce(wasmer::Module) + Send + 'static>,
     ) -> Result<(), WasiThreadError> {
+        web_sys::console::log_1(&"VirtualTaskManager::spawn_with_module called.".into());
         Err(WasiThreadError::Unsupported)
     }
 }
