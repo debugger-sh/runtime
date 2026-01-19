@@ -6,8 +6,10 @@ import { oneDark } from '@codemirror/theme-one-dark';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import { Box, Button, FormControl, InputLabel, MenuItem, Select, Typography } from '@mui/material';
 import CodeMirror from '@uiw/react-codemirror';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Runtime } from 'runtime';
+
+import Terminal, { TerminalHandle } from '@/components/Terminal';
 
 type Language = 'javascript' | 'python';
 
@@ -29,6 +31,7 @@ export default function CodeEditor() {
   const [code, setCode] = useState<string>(defaultCode.javascript);
   const [language, setLanguage] = useState<Language>('javascript');
   const [isRunning, setIsRunning] = useState<boolean>(false);
+  const terminalRef = useRef<TerminalHandle | null>(null);
 
   const handleLanguageChange = (newLanguage: Language) => {
     setLanguage(newLanguage);
@@ -60,14 +63,24 @@ export default function CodeEditor() {
     setIsRunning(true);
 
     try {
+      terminalRef.current?.clear();
+      terminalRef.current?.writeln('Running...');
+
+      // TODO: Replace this placeholder with runtime/compiler integration.
+      // This is where we will:
+      // 1) Initialize the runtime (or a worker) with the chosen language.
+      // 2) Stream stdout/stderr into the terminal as the program runs.
+      // 3) Surface compile/runtime errors with clear messaging.
+      // TODO: When the runtime package is wired into the demo, replace this with:
+
       await Runtime.create('c');
 
       // Placeholder: Simulate API call
+      terminalRef.current?.writeln('Output will appear here once the runtime is wired.');
       await new Promise((resolve) => setTimeout(resolve, 500));
-      console.log('Code to run:', { code, language });
     } catch (error) {
       console.error('Failed to run code:', error);
-      // TODO: Display error message to user
+      terminalRef.current?.writeln('Error: Failed to run code.');
     } finally {
       setIsRunning(false);
     }
@@ -150,25 +163,28 @@ export default function CodeEditor() {
           </Button>
         </Box>
       </Box>
-      <Box sx={{ flex: 1, overflow: 'hidden' }}>
-        <CodeMirror
-          value={code}
-          height="100%"
-          theme={oneDark}
-          extensions={extensions}
-          onChange={(value) => setCode(value)}
-          basicSetup={{
-            lineNumbers: true,
-            foldGutter: true,
-            dropCursor: false,
-            allowMultipleSelections: false,
-            indentOnInput: true,
-            bracketMatching: true,
-            closeBrackets: true,
-            autocompletion: true,
-            highlightSelectionMatches: true,
-          }}
-        />
+      <Box sx={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        <Box sx={{ flex: 1, overflow: 'hidden' }}>
+          <CodeMirror
+            value={code}
+            height="100%"
+            theme={oneDark}
+            extensions={extensions}
+            onChange={(value) => setCode(value)}
+            basicSetup={{
+              lineNumbers: true,
+              foldGutter: true,
+              dropCursor: false,
+              allowMultipleSelections: false,
+              indentOnInput: true,
+              bracketMatching: true,
+              closeBrackets: true,
+              autocompletion: true,
+              highlightSelectionMatches: true,
+            }}
+          />
+        </Box>
+        <Terminal ref={terminalRef} />
       </Box>
     </Box>
   );
