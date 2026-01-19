@@ -22,6 +22,7 @@ use wasmer_wasix::{
 use crate::console::ConsoleFile;
 
 mod console;
+mod execution;
 mod runtime;
 
 const CLANG_WASM_URL: &str = "https://runno.dev/langs/clang.wasm";
