@@ -1,32 +1,17 @@
 use console_error_panic_hook;
-use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::io::{Cursor, Read};
 use std::path::PathBuf;
-use tar::Archive;
 use tsify::Tsify;
-use wasm_bindgen::{JsCast, prelude::*};
-use wasm_bindgen_futures::JsFuture;
-use wasmer::{Module, Store};
-use wasmer_wasix::WasiEnv;
-use wasmer_wasix::virtual_fs::{AsyncWriteExt, FileSystem, mem_fs};
-use wasmer_wasix::virtual_fs::{OpenOptionsConfig, create_dir_all};
+use wasm_bindgen::prelude::*;
+use wasmer_wasix::virtual_fs::{AsyncWriteExt, FileSystem, create_dir_all, mem_fs};
 use web_sys::{DedicatedWorkerGlobalScope, MessageEvent};
 
-use wasmer_wasix::{
-    Pipe,
-    runners::wasi::{RuntimeOrEngine, WasiRunner},
-};
-
-use crate::console::ConsoleFile;
+use crate::execution::Execution;
 
 mod console;
 mod execution;
 mod runtime;
-
-const CLANG_WASM_URL: &str = "https://runno.dev/langs/clang.wasm";
-const CLANG_SYSROOT_URL: &str = "https://runno.dev/langs/clang-fs.tar.gz";
 
 // ============================================================================
 // Types
@@ -57,48 +42,13 @@ pub enum WorkerOut {
 // Helpers
 // ============================================================================
 
-async fn fetch_bytes(url: &str) -> Result<Vec<u8>, JsValue> {
-    let scope = DedicatedWorkerGlobalScope::from(JsValue::from(js_sys::global()));
-    let response: web_sys::Response = JsFuture::from(scope.fetch_with_str(url))
-        .await?
-        .dyn_into()?;
-    let buffer = JsFuture::from(response.array_buffer()?).await?;
-    Ok(js_sys::Uint8Array::new(&buffer).to_vec())
-}
-
-async fn extract_tar_gz(data: Vec<u8>) -> Result<mem_fs::FileSystem, std::io::Error> {
-    let decoder = GzDecoder::new(Cursor::new(data));
-    let mut archive = Archive::new(decoder);
-
+async fn create_user_fs(node: FsNode) -> Result<mem_fs::FileSystem, std::io::Error> {
     let fs = mem_fs::FileSystem::default();
-
-    for entry in archive.entries()? {
-        let mut entry = entry?;
-        let is_dir = entry.header().entry_type().is_dir();
-        let abs_path = PathBuf::from(format!("/{}", entry.path()?.to_string_lossy()));
-
-        if is_dir {
-            fs.create_dir(&abs_path).expect("Created directory")
-        } else {
-            if let Some(parent) = abs_path.parent() {
-                create_dir_all(&fs, &parent).expect("Created parent directories");
-            }
-            let mut file = fs
-                .new_open_options()
-                .create(true)
-                .write(true)
-                .open(&abs_path)
-                .expect("Created file");
-
-            let mut contents = Vec::new();
-            entry.read_to_end(&mut contents)?;
-            file.write(&contents).await.expect("Wrote file");
-        }
-    }
+    create_user_fs_rec(&fs, &PathBuf::from("/"), &node).await?;
     Ok(fs)
 }
 
-async fn inject_files(
+async fn create_user_fs_rec(
     fs: &mem_fs::FileSystem,
     base_path: &PathBuf,
     node: &FsNode,
@@ -121,9 +71,7 @@ async fn inject_files(
             for (name, child_node) in children {
                 let mut child_path = base_path.clone();
                 child_path.push(name);
-                Box::pin(inject_files(fs, &child_path, child_node))
-                    .await
-                    .expect("Failed to create injected children files")
+                Box::pin(create_user_fs_rec(fs, &child_path, child_node)).await?;
             }
         }
     }
@@ -137,39 +85,17 @@ async fn inject_files(
 async fn start(msg: WorkerStart) {
     web_sys::console::log_1(&format!("Started! {:?}", msg).into());
 
-    // Parallelizes the two fetches
-    let (clang_wasm_bytes, sysroot_bytes) =
-        // the sysroot is a tar.gz archive that is the root filesystem for clang 
-        futures::try_join!(fetch_bytes(CLANG_WASM_URL), fetch_bytes(CLANG_SYSROOT_URL),)
-            .expect("fetched clang wasm and sysroot");
-
-    // this is the wasmer store that holds the state of the module
-    let mut store = Store::default();
-
-    // Need to pass bytes to Module::from_binary
-    // https://wasmerio.github.io/wasmer/crates/doc/wasmer/struct.Module.html
-    let clang_binary =
-        Module::from_binary(&store, &clang_wasm_bytes).expect("Succeeded compiling clang module");
-
-    let fs = extract_tar_gz(sysroot_bytes)
+    let fs = create_user_fs(FsNode::Dir(msg.fs))
         .await
-        .expect("extracted sysroot filesystem into mem fs");
+        .expect("created user files filesystem");
 
-    // overlay user files onto the sysroot
-    inject_files(&fs, &PathBuf::from("/"), &FsNode::Dir(msg.fs))
-        .await
-        .expect("injected user files");
+    let mut exec = Execution::new();
 
-    web_sys::console::log_1(&format!("FS: {:?}", fs).into());
-
-    // Must call instatiate after writing files
-    // WasiEnv builder to configure the environment
-    let mut builder = WasiEnv::builder("clang") // name becomes argv[0]
-        .runtime(runtime::JsRuntime::instance())
-        // We are going to put fs into a box to satisfy the trait object requirement.
-        .fs(Box::new(fs)) // Mount the virtual filesystem. A box is a pointer type in Rust
+    exec.step("clang")
+        .binary("https://runno.dev/langs/clang.wasm")
+        .sysroot("https://runno.dev/langs/clang-fs.tar.gz")
+        .fs(Box::new(fs))
         .args(&[
-            // "--version",
             "-cc1",
             "-Werror",
             "-emit-obj",
@@ -192,30 +118,42 @@ async fn start(msg: WorkerStart) {
             "c++",
             "/main.c",
         ])
-        .stdout(Box::new(ConsoleFile::default()))
-        .stderr(Box::new(ConsoleFile::default()));
+        .run()
+        .await
+        .expect("Compilation succeeded");
 
-    // This guy preopens the root directory of the virtual FS to the WASI module
-    // it is what allows the module to see the files we put in there
-    builder.add_preopen_dir("/").expect("preopen");
+    exec.step("wasm-ld")
+        .binary("https://runno.dev/langs/wasm-ld.wasm")
+        .args(&[
+            "--no-threads",
+            "--export-dynamic",
+            "-z",
+            "stack-size=1048576",
+            "-L/sys/lib/wasm32-wasi",
+            "/sys/lib/wasm32-wasi/crt1.o",
+            "/main.o",
+            "-lc",
+            "-lc++",
+            "-lc++abi",
+            "-o",
+            "/main.wasm",
+        ])
+        .run()
+        .await
+        .expect("Linking succeeded");
 
-    let (instance, env) = builder
-        .instantiate(clang_binary, &mut store)
-        .expect("Instantiated clang module");
-
-    let start = instance
-        .exports
-        .get_function("_start")
-        .expect("Found _start function");
-
-    start.call(&mut store, &[]).expect("Ran _start function");
-
-    let fs = env.data(&store).fs_root();
+    exec.step("main")
+        .binary("/main.wasm")
+        .run()
+        .await
+        .expect("Running succeeded");
 
     // Print out the filesystem toplevel for debugging
-    let root = fs
+    let root = exec
+        .fs
         .read_dir(PathBuf::from("/").as_path())
         .expect("Read root dir");
+
     for entry in root {
         web_sys::console::log_1(&format!("FS Entry: {:?}", entry).into());
     }

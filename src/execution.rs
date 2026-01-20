@@ -1,11 +1,26 @@
-use wasmer::RuntimeError;
+use flate2::read::GzDecoder;
+use std::io::{Cursor, Read};
+use std::path::PathBuf;
+use std::sync::Arc;
+use tar::Archive;
+use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen_futures::JsFuture;
+use wasmer::{Module, RuntimeError, Store};
+use wasmer_wasix::virtual_fs::AsyncReadExt;
 use wasmer_wasix::{
-    WasiEnvBuilder,
-    virtual_fs::{FileSystem, mem_fs},
+    WasiEnv, WasiEnvBuilder, WasiError,
+    virtual_fs::{AsyncWriteExt, FileSystem, create_dir_all, mem_fs},
 };
 
+use web_sys::DedicatedWorkerGlobalScope;
+
+use crate::console::ConsoleFile;
+use crate::runtime::JsRuntime;
+
+use std::fmt::Debug;
+
 pub struct Execution {
-    fs: mem_fs::FileSystem,
+    pub fs: mem_fs::FileSystem,
 }
 
 pub struct Step<'a> {
@@ -26,7 +41,7 @@ impl Execution {
     pub fn step<'a>(&'a mut self, name: &str) -> Step<'a> {
         Step {
             exec: self,
-            builder: WasiEnvBuilder::new(name),
+            builder: WasiEnv::builder(name),
             binary: None,
             sysroot: None,
             union_fs: None,
@@ -72,9 +87,141 @@ impl<'a> Step<'a> {
     }
 
     pub async fn run(self) -> Result<(), RuntimeError> {
-        // TODO: This is just placeholder for now
-        // let fs = std::mem::replace(&mut self.exec.fs, mem_fs::FileSystem::default());
-        self.builder.fs(Box::new(self.exec.fs.clone()));
+        /* Download the binary from the URL / filesystem */
+        let Some(binary_loc) = &self.binary else {
+            return Err(RuntimeError::new("No binary specified"));
+        };
+
+        let binary_bytes = if binary_loc.starts_with("/") {
+            let mut file = self
+                .exec
+                .fs
+                .new_open_options()
+                .read(true)
+                .open(binary_loc)
+                .ensure("Binary exists in filesystem")?;
+
+            let mut buf = Vec::new();
+            file.read_to_end(&mut buf)
+                .await
+                .ensure("Read binary file from filesystem")?;
+            buf
+        } else {
+            fetch_bytes(binary_loc)
+                .await
+                .ensure("Fetch binary from network")?
+        };
+
+        let mut store = Store::default();
+        let module = Module::from_binary(&store, &binary_bytes).ensure("Created WASM module")?;
+
+        /* Fetch the sysroot and union into the vfs if needed */
+        if let Some(sysroot_loc) = &self.sysroot {
+            let sysroot_bytes = fetch_bytes(sysroot_loc)
+                .await
+                .ensure("Fetched sysroot from network")?;
+            let sysroot_fs = extract_tar_gz(sysroot_bytes)
+                .await
+                .ensure("Created sysroot fs from tarball")?;
+            let sysroot_fs: Arc<dyn FileSystem + Send + Sync> = Arc::new(sysroot_fs);
+            self.exec.fs.union(&sysroot_fs);
+        }
+
+        /* Union user files into the vfs if needed */
+        if let Some(union_fs) = self.union_fs {
+            let union_fs: Arc<dyn FileSystem + Send + Sync> = Arc::new(union_fs);
+            self.exec.fs.union(&union_fs);
+        }
+
+        /* Configure Wasmer WASI environment */
+        let mut builder = self
+            .builder
+            .runtime(JsRuntime::instance())
+            .fs(Box::new(self.exec.fs.clone()))
+            .stdout(Box::new(ConsoleFile::default()))
+            .stderr(Box::new(ConsoleFile::default()));
+
+        builder
+            .add_preopen_dir("/")
+            .ensure("Preopened root directory")?;
+
+        /* Instantiate and run the binary */
+        let (instance, _env) = builder
+            .instantiate(module, &mut store)
+            .ensure("Instantiated Wasmer instance")?;
+
+        let start = instance
+            .exports
+            .get_function("_start")
+            .ensure("Found _start export")?;
+
+        /* Prevent `exit(0)` from being treated as an error */
+        if let Err(err) = start.call(&mut store, &[]) {
+            let wasi_err = err.downcast_ref::<WasiError>();
+            let Some(wasi_err) = wasi_err else {
+                return Err(err);
+            };
+
+            let WasiError::Exit(code) = wasi_err else {
+                return Err(err);
+            };
+
+            if !code.is_success() {
+                return Err(err);
+            }
+        }
+
         Ok(())
+    }
+}
+
+pub async fn fetch_bytes(url: &str) -> Result<Vec<u8>, JsValue> {
+    let scope = DedicatedWorkerGlobalScope::from(JsValue::from(js_sys::global()));
+    let response: web_sys::Response = JsFuture::from(scope.fetch_with_str(url))
+        .await?
+        .dyn_into()?;
+    let buffer = JsFuture::from(response.array_buffer()?).await?;
+    Ok(js_sys::Uint8Array::new(&buffer).to_vec())
+}
+
+pub async fn extract_tar_gz(data: Vec<u8>) -> Result<mem_fs::FileSystem, std::io::Error> {
+    let decoder = GzDecoder::new(Cursor::new(data));
+    let mut archive = Archive::new(decoder);
+
+    let fs = mem_fs::FileSystem::default();
+
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let is_dir = entry.header().entry_type().is_dir();
+        let abs_path = PathBuf::from(format!("/{}", entry.path()?.to_string_lossy()));
+
+        if is_dir {
+            fs.create_dir(&abs_path).expect("Created directory");
+        } else {
+            if let Some(parent) = abs_path.parent() {
+                create_dir_all(&fs, &parent).expect("Created parent directories");
+            }
+            let mut file = fs
+                .new_open_options()
+                .create(true)
+                .write(true)
+                .open(&abs_path)
+                .expect("Created file");
+
+            let mut contents = Vec::new();
+            entry.read_to_end(&mut contents)?;
+            file.write(&contents).await.expect("Wrote file");
+        }
+    }
+    Ok(fs)
+}
+
+trait Ensure<T> {
+    fn ensure(self, message: &str) -> Result<T, RuntimeError>;
+}
+
+impl<T, E: Debug> Ensure<T> for Result<T, E> {
+    fn ensure(self, message: &str) -> Result<T, RuntimeError> {
+        self.map_err(|e| RuntimeError::new(format!("{message}: {:?}", e)))
     }
 }

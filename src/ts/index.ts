@@ -20,7 +20,7 @@ export class Runtime {
     worker.onmessage = (e) => console.log(e);
     const message: WorkerStart = {
       fs: {
-        'main.c': `#include <vector> \n\n int main() { return 0; }`,
+        'main.c': `#include <iostream> \n\n int main() { std::cout << "hello world" << std::endl; return 0; }`,
       },
     };
     worker.postMessage(message);

@@ -1,5 +1,5 @@
 use std::{
-    fmt, io,
+    io,
     pin::Pin,
     task::{Context, Poll},
 };
@@ -36,19 +36,19 @@ impl AsyncWrite for ConsoleFile {
 impl AsyncRead for ConsoleFile {
     fn poll_read(
         self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut wasmer_wasix::virtual_fs::ReadBuf<'_>,
+        _cx: &mut Context<'_>,
+        _buf: &mut wasmer_wasix::virtual_fs::ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         Poll::Ready(Ok(()))
     }
 }
 
 impl AsyncSeek for ConsoleFile {
-    fn start_seek(self: Pin<&mut Self>, position: io::SeekFrom) -> io::Result<()> {
+    fn start_seek(self: Pin<&mut Self>, _position: io::SeekFrom) -> io::Result<()> {
         Ok(())
     }
 
-    fn poll_complete(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
+    fn poll_complete(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
         Poll::Ready(Ok(0))
     }
 }
