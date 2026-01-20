@@ -12,6 +12,7 @@ use crate::execution::Execution;
 mod console;
 mod execution;
 mod runtime;
+mod io;
 
 // ============================================================================
 // Types
