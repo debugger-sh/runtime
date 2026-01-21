@@ -33,3 +33,4 @@ console_error_panic_hook = "0.1.7"
 async-trait = "0.1.89"
 wasmer-config = "0.601.0"
 instant = { version = "0.1", features = ["wasm-bindgen"] }
+serde_repr = "0.1.20"

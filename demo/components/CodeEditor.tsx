@@ -73,11 +73,19 @@ export default function CodeEditor() {
       // 3) Surface compile/runtime errors with clear messaging.
       // TODO: When the runtime package is wired into the demo, replace this with:
 
-      await Runtime.create('c');
+      const rt = Runtime.create('c');
 
-      // Placeholder: Simulate API call
-      terminalRef.current?.writeln('Output will appear here once the runtime is wired.');
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      const createTerminalWriter = () =>
+        new WritableStream<string>({
+          write(chunk) {
+            terminalRef.current?.write(chunk);
+          },
+        });
+
+      rt.stdout.pipeThrough(new TextDecoderStream()).pipeTo(createTerminalWriter());
+      rt.stderr.pipeThrough(new TextDecoderStream()).pipeTo(createTerminalWriter());
+
+      await rt.run();
     } catch (error) {
       console.error('Failed to run code:', error);
       terminalRef.current?.writeln('Error: Failed to run code.');

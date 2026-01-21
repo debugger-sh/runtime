@@ -14,8 +14,9 @@ use wasmer_wasix::{
 
 use web_sys::DedicatedWorkerGlobalScope;
 
-use crate::console::ConsoleFile;
+use crate::io::Stdout;
 use crate::runtime::JsRuntime;
+use crate::types::StdoutMode;
 
 use std::fmt::Debug;
 
@@ -138,8 +139,8 @@ impl<'a> Step<'a> {
             .builder
             .runtime(JsRuntime::instance())
             .fs(Box::new(self.exec.fs.clone()))
-            .stdout(Box::new(ConsoleFile::default()))
-            .stderr(Box::new(ConsoleFile::default()));
+            .stdout(Box::new(Stdout::new(StdoutMode::Out)))
+            .stderr(Box::new(Stdout::new(StdoutMode::Err)));
 
         builder
             .add_preopen_dir("/")

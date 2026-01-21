@@ -119,9 +119,10 @@ impl AsyncWrite for Stdout {
     fn poll_write(
         self: Pin<&mut Self>,
         _cx: &mut Context<'_>,
-        _buf: &[u8],
+        buf: &[u8],
     ) -> Poll<io::Result<usize>> {
-        Poll::Ready(Ok(0))
+        WorkerOut::Stdout { data: buf, mode: self.mode }.send();
+        Poll::Ready(Ok(buf.len()))
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {

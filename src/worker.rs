@@ -132,6 +132,8 @@ async fn start(msg: WorkerStart) {
     for entry in root {
         web_sys::console::log_1(&format!("FS Entry: {:?}", entry).into());
     }
+
+    WorkerOut::Stop.send();
 }
 
 #[wasm_bindgen]
