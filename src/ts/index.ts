@@ -20,9 +20,7 @@ export class Runtime {
 
   private constructor(lang: Lang) {
     this.lang = lang;
-
-    const { writable: stdin } = new TransformStream<Uint8Array, Uint8Array>();
-    this.stdin = stdin;
+    this.stdin = this.in.stream;
     this.stdout = this.out.stream;
     this.stderr = this.err.stream;
   }
@@ -107,4 +105,14 @@ class StdoutStream {
 
 class StdinStream {
   public readonly buffer = new SharedArrayBuffer(8 * 1024);
+  public readonly stream: WritableStream<Uint8Array>;
+
+  constructor() {
+    this.stream = new WritableStream({
+      write(_chunk) {
+        // TODO: Place `chunk` into the buffer so that the worker can read
+        throw _chunk;
+      },
+    });
+  }
 }
