@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_repr::{Deserialize_repr, Serialize_repr};
+use serde_repr::{Serialize_repr};
 use std::collections::HashMap;
 use tsify::Tsify;
 use wasm_bindgen::JsValue;

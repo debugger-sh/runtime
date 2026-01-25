@@ -7,7 +7,6 @@ use web_sys::{DedicatedWorkerGlobalScope, MessageEvent};
 use crate::execution::Execution;
 use crate::types::*;
 
-mod console;
 mod execution;
 mod runtime;
 mod io;

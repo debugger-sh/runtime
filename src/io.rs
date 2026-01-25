@@ -25,6 +25,9 @@ pub struct Stdin {
     data: js_sys::Uint8Array,
 }
 
+unsafe impl Send for Stdin {}
+unsafe impl Sync for Stdin {}
+
 impl Stdin {
     pub fn new(stdin_buffer: &js_sys::SharedArrayBuffer) -> Self {
         // Create typed array views over the SharedArrayBuffer
@@ -39,13 +42,6 @@ impl Stdin {
             DATA_SIZE,
         );
         Self { indices, data }
-    }
-
-    /// Returns the number of bytes available to read
-    fn available(&self) -> u32 {
-        let read_idx = js_sys::Atomics::load(&self.indices, READ_IDX).unwrap_or(0) as u32;
-        let write_idx = js_sys::Atomics::load(&self.indices, WRITE_IDX).unwrap_or(0) as u32;
-        (write_idx.wrapping_sub(read_idx)) % DATA_SIZE
     }
 }
 
@@ -62,7 +58,10 @@ impl AsyncWrite for Stdin {
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        Poll::Ready(Ok(()))
+        Poll::Ready(Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "cannot flush stdin",
+        )))
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
@@ -76,35 +75,37 @@ impl AsyncRead for Stdin {
         _cx: &mut Context<'_>,
         buf: &mut wasmer_wasix::virtual_fs::ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
-        let read_idx = js_sys::Atomics::load(&self.indices, READ_IDX).unwrap_or(0) as u32;
-        let write_idx = js_sys::Atomics::load(&self.indices, WRITE_IDX).unwrap_or(0) as u32;
+        let read_idx =
+            js_sys::Atomics::load(&self.indices, READ_IDX).expect("Loaded read_idx") as u32;
+        let write_idx =
+            js_sys::Atomics::load(&self.indices, WRITE_IDX).expect("Loaded write_idx") as u32;
 
         // Calculate contiguous available bytes (no wrap-around handling)
-        let available = if read_idx <= write_idx {
+        let available =  if read_idx <= write_idx {
             write_idx - read_idx
         } else {
-            DATA_SIZE - read_idx // Only read to end of buffer; next call handles wrapped part
+            DATA_SIZE - read_idx
         };
 
         if available == 0 {
             // Wait on the write index
-            let _ = js_sys::Atomics::wait(&self.indices, WRITE_IDX, write_idx as i32);
-            return Poll::Pending;
+            js_sys::Atomics::wait(&self.indices, WRITE_IDX, write_idx as i32)
+                .expect("Waited on write_idx");
+            return self.poll_read(_cx, buf);
         }
 
         // Read contiguous chunk only
-        let to_read = std::cmp::min(available as usize, buf.remaining());
-        let slice = self.data.slice(read_idx, read_idx + to_read as u32);
-        let mut temp = vec![0u8; to_read];
-        slice.copy_to(&mut temp);
-        buf.put_slice(&temp);
+        let to_read = std::cmp::min(available, buf.remaining() as u32);
+        let slice = self.data.slice(read_idx, read_idx + to_read);
+        buf.put_slice(slice.to_vec().as_slice());
 
-        // Update read index atomically (wraps naturally via modulo)
-        let new_read_idx = ((read_idx as usize + to_read) % DATA_SIZE as usize) as i32;
-        let _ = js_sys::Atomics::store(&self.indices, READ_IDX, new_read_idx);
+        // Update read index atomically
+        let new_read_idx = (read_idx + to_read) % DATA_SIZE;
+        js_sys::Atomics::store(&self.indices, READ_IDX, new_read_idx as i32)
+            .expect("Stored new read_idx");
 
         // Notify TypeScript that we consumed data
-        let _ = js_sys::Atomics::notify(&self.indices, READ_IDX);
+        js_sys::Atomics::notify(&self.indices, READ_IDX).expect("Notified main thread");
 
         Poll::Ready(Ok(()))
     }

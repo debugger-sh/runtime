@@ -1,4 +1,5 @@
 use flate2::read::GzDecoder;
+use js_sys::SharedArrayBuffer;
 use std::io::{Cursor, Read};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,6 +16,7 @@ use wasmer_wasix::{
 use web_sys::DedicatedWorkerGlobalScope;
 
 use crate::io::Stdout;
+use crate::io::Stdin;
 use crate::runtime::JsRuntime;
 use crate::types::StdoutMode;
 
@@ -143,7 +145,8 @@ impl<'a> Step<'a> {
             .runtime(JsRuntime::instance())
             .fs(Box::new(self.exec.fs.clone()))
             .stdout(Box::new(Stdout::new(StdoutMode::Out)))
-            .stderr(Box::new(Stdout::new(StdoutMode::Err)));
+            .stderr(Box::new(Stdout::new(StdoutMode::Err)))
+            .stdin(Box::new(Stdin::new(&self.exec.stdin_buffer)));
 
         builder
             .add_preopen_dir("/")
