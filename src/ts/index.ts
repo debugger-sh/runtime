@@ -7,10 +7,26 @@ export type Lang = 'c';
 export type FsNode = string | DirNode;
 export type DirNode = { [name: string]: FsNode };
 
+/**
+ * Options for running code with callback-based I/O.
+ */
+export type RunOptions = {
+  /** Called when the program writes to stdout. Receives normalized text (with \r\n line endings). */
+  onStdout?: (data: string) => void;
+  /** Called when the program writes to stderr. Receives normalized text (with \r\n line endings). */
+  onStderr?: (data: string) => void;
+  /** AbortSignal to cancel execution. */
+  signal?: AbortSignal;
+};
+
 export class Runtime {
   private out = new StdoutStream(1);
   private err = new StdoutStream(2);
   private in = new StdinStream();
+  private currentWorker: Worker | null = null;
+  private stopResolver: ((value: void) => void) | null = null;
+  private decoder = new TextDecoder();
+  private encoder = new TextEncoder();
 
   /**
    * The programming language of this runtime.
@@ -40,6 +56,8 @@ export class Runtime {
    *
    *  writer.write(encoder.encode('hello world\n'));
    * ```
+   *
+   * @deprecated Use `pushStdin()` for simpler API
    */
   public get stdin() {
     return this.in.stream;
@@ -47,6 +65,8 @@ export class Runtime {
 
   /**
    * A [ReadableStream](https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream) for reading the program's `stdout` (fd 1).
+   *
+   * @deprecated Use `run({ onStdout })` for simpler API
    */
   public get stdout() {
     return this.out.stream;
@@ -54,9 +74,18 @@ export class Runtime {
 
   /**
    * A [ReadableStream](https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream) for reading the program's `stderr` (fd 2).
+   *
+   * @deprecated Use `run({ onStderr })` for simpler API
    */
   public get stderr() {
     return this.err.stream;
+  }
+
+  /**
+   * Whether code is currently running.
+   */
+  public get isRunning(): boolean {
+    return this.currentWorker !== null;
   }
 
   static create(lang: Lang): Runtime {
@@ -67,11 +96,95 @@ export class Runtime {
     this.lang = lang;
   }
 
-  // TODO: Make this function reentrant
-  async run(): Promise<void> {
-    const worker = new RustWorker();
+  /**
+   * Push text to the program's stdin.
+   * This is the simplest way to send input to a running program.
+   *
+   * @example
+   * ```ts
+   * const rt = Runtime.create('c');
+   * // ... in your input handler:
+   * rt.pushStdin('hello world\n');
+   * ```
+   */
+  public pushStdin(text: string): void {
+    const encoded = this.encoder.encode(text);
+    this.in.writeSync(encoded);
+  }
 
-    /* Set up handling for stdout/stderr */
+  /**
+   * Stops the currently running execution by terminating the worker.
+   * Safe to call even if no execution is running.
+   * This will cause the run() promise to resolve immediately.
+   */
+  public stop(): void {
+    if (this.currentWorker) {
+      this.currentWorker.terminate();
+      this.out.removeWorker(this.currentWorker);
+      this.err.removeWorker(this.currentWorker);
+      this.currentWorker = null;
+      this.in.clear();
+      if (this.stopResolver) {
+        this.stopResolver();
+        this.stopResolver = null;
+      }
+    }
+  }
+
+  /**
+   * Run the code in the filesystem.
+   *
+   * @param options - Optional callbacks for stdout/stderr and abort signal
+   *
+   * @example
+   * ```ts
+   * const rt = Runtime.create('c');
+   * rt.fs = { 'main.c': code };
+   *
+   * await rt.run({
+   *   onStdout: (text) => terminal.write(text),
+   *   onStderr: (text) => terminal.write(text),
+   *   signal: abortController.signal,
+   * });
+   * ```
+   */
+  async run(options?: RunOptions): Promise<void> {
+    const { onStdout, onStderr, signal } = options ?? {};
+
+    // Handle abort signal
+    if (signal?.aborted) {
+      return;
+    }
+
+    const abortHandler = () => this.stop();
+    signal?.addEventListener('abort', abortHandler);
+
+    const worker = new RustWorker();
+    this.currentWorker = worker;
+
+    // Set up callback-based stdout/stderr handling if provided
+    const stdoutCallback = onStdout
+      ? (event: MessageEvent<WorkerOut>) => {
+          const msg = event.data;
+          if (msg.type !== 'stdout' || msg.mode !== 1) return;
+          const text = this.decoder.decode(msg.data as Uint8Array);
+          onStdout(text.replaceAll('\n', '\r\n'));
+        }
+      : null;
+
+    const stderrCallback = onStderr
+      ? (event: MessageEvent<WorkerOut>) => {
+          const msg = event.data;
+          if (msg.type !== 'stdout' || msg.mode !== 2) return;
+          const text = this.decoder.decode(msg.data as Uint8Array);
+          onStderr(text.replaceAll('\n', '\r\n'));
+        }
+      : null;
+
+    if (stdoutCallback) worker.addEventListener('message', stdoutCallback);
+    if (stderrCallback) worker.addEventListener('message', stderrCallback);
+
+    // Also set up stream-based handling (for backwards compatibility)
     this.out.addWorker(worker);
     this.err.addWorker(worker);
 
@@ -86,22 +199,48 @@ export class Runtime {
       worker.addEventListener('message', callback);
     });
 
-    /* At this point in the code, the worker is ready to receive messages */
-    worker.onmessage = (e) => console.log(e);
-
     /**
      * Run the worker, and wait for it to send us a Stop message.
-     * Note that we must set up the listener *before* running the worker
-     * to avoid a race condition.
      */
     const stop = new Promise<void>((resolve) => {
+      this.stopResolver = resolve;
+      let resolved = false;
+      let maxTimeout: ReturnType<typeof setTimeout> | null = null;
+
+      const doResolve = () => {
+        if (resolved) return;
+        resolved = true;
+        if (maxTimeout) {
+          clearTimeout(maxTimeout);
+          maxTimeout = null;
+        }
+        worker.removeEventListener('message', callback);
+        worker.removeEventListener('error', errorCallback);
+        this.stopResolver = null;
+        resolve();
+      };
+
+      const errorCallback = (error: ErrorEvent) => {
+        console.error('Worker error:', error);
+        doResolve();
+      };
+
       const callback = (message: MessageEvent<WorkerOut>) => {
         if (message.data.type === 'stop') {
-          worker.removeEventListener('message', callback);
-          resolve();
+          doResolve();
         }
       };
+
       worker.addEventListener('message', callback);
+      worker.addEventListener('error', errorCallback);
+
+      // Set a maximum timeout (30 seconds) to prevent hanging forever
+      maxTimeout = setTimeout(() => {
+        if (!resolved) {
+          console.warn('Worker timeout - resolving promise (worker may have panicked)');
+          doResolve();
+        }
+      }, 30000);
     });
 
     const message: WorkerStart = {
@@ -113,16 +252,16 @@ export class Runtime {
 
     await stop;
 
-    /* This is just good hygiene */
+    // Cleanup
+    signal?.removeEventListener('abort', abortHandler);
+    if (stdoutCallback) worker.removeEventListener('message', stdoutCallback);
+    if (stderrCallback) worker.removeEventListener('message', stderrCallback);
     this.out.removeWorker(worker);
     this.err.removeWorker(worker);
     this.in.clear();
+    this.currentWorker = null;
+    this.stopResolver = null;
   }
-
-  /* visit later:
-        runtime.stdout.pipeTo(console.log);
-        runtime.stdin.write("haha ");
-   */
 }
 
 class StdoutStream {
@@ -169,7 +308,6 @@ class StdinStream {
   public readonly buffer = new SharedArrayBuffer(StdinStream.BUFFER_SIZE);
   public readonly stream: WritableStream<Uint8Array>;
 
-  // Made this to manage indexes easier
   private readonly indices: Int32Array;
   private readonly data: Int8Array;
 
@@ -183,6 +321,36 @@ class StdinStream {
 
   public clear() {
     this.indices.fill(0);
+  }
+
+  /**
+   * Synchronously write data to the stdin buffer.
+   * Used by Runtime.pushStdin() for simpler API.
+   */
+  public writeSync(chunk: Uint8Array): void {
+    const { DATA_SIZE, READ_IDX, WRITE_IDX } = StdinStream;
+    let offset = 0;
+
+    while (offset < chunk.length) {
+      const readIdx = Atomics.load(this.indices, READ_IDX);
+      let writeIdx = Atomics.load(this.indices, WRITE_IDX);
+
+      if (writeIdx === DATA_SIZE - 1 && readIdx > 0) writeIdx = 0;
+      const available = readIdx <= writeIdx ? DATA_SIZE - writeIdx - 1 : readIdx - writeIdx - 1;
+
+      if (available === 0) {
+        // Buffer full - in sync mode, we spin-wait (blocking)
+        // This is acceptable for interactive input which is typically small
+        continue;
+      }
+
+      const toWrite = Math.min(chunk.length - offset, available);
+      this.data.set(chunk.subarray(offset, offset + toWrite), writeIdx);
+
+      Atomics.store(this.indices, WRITE_IDX, (writeIdx + toWrite) % DATA_SIZE);
+      Atomics.notify(this.indices, WRITE_IDX);
+      offset += toWrite;
+    }
   }
 
   private async write(chunk: Uint8Array): Promise<void> {
@@ -204,7 +372,6 @@ class StdinStream {
       const toWrite = Math.min(chunk.length - offset, available);
       this.data.set(chunk.subarray(offset, offset + toWrite), writeIdx);
 
-      // Write index & notify reader
       Atomics.store(this.indices, WRITE_IDX, (writeIdx + toWrite) % DATA_SIZE);
       Atomics.notify(this.indices, WRITE_IDX);
       offset += toWrite;
