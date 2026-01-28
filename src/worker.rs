@@ -2,10 +2,10 @@ use console_error_panic_hook;
 use js_sys::SharedArrayBuffer;
 use std::path::PathBuf;
 use wasm_bindgen::prelude::*;
-use wasmer_wasix::virtual_fs::{AsyncReadExt, AsyncWriteExt, FileSystem, create_dir_all, mem_fs};
+use wasmer_wasix::virtual_fs::{AsyncWriteExt, FileSystem, create_dir_all, mem_fs};
 use web_sys::{DedicatedWorkerGlobalScope, MessageEvent};
 
-use crate::debug::*;
+use crate::debug::Debugger;
 use crate::dwarf::*;
 use crate::execution::Execution;
 use crate::types::*;
@@ -130,39 +130,42 @@ async fn start(msg: WorkerStart) {
         .await
         .expect("Linking succeeded");
 
-    // sends the debug info to the client
+    // Debug mode: parse DWARF, instrument binary, set up debugger
     if msg.is_debug {
         let wasm_bytes = get_wasm_bytes(&exec.fs, "/main.wasm")
             .await
             .expect("Read main.wasm");
 
-        let dwarf_info = parse_dwarf_info(&wasm_bytes);
-        let instrumented_wasm = instrument_binary(&wasm_bytes, &dwarf_info.0);
+        let (locations, files) = parse_dwarf_info(&wasm_bytes);
+        let instrumented_wasm =
+            instrument_binary(&wasm_bytes, &locations).expect("Instrumentation failed");
 
-        let num_breakpoints = dwarf_info.0.len();
-        let bits_needed = num_breakpoints + 1; // +1 for Atomics wait/resume signal (sentinel)
-        let bytes_needed = ((bits_needed + 7) / 8) as u32;
-
-        // minimal amount of bytes needed to store the breakpoints where each bit represents a breakpoint
-        let buffer = SharedArrayBuffer::new(bytes_needed);
-
-        // TODO:remove after debugging
-        web_sys::console::log_1(&format!("Dwarf info: {:?}", dwarf_info).into());
-        web_sys::console::log_1(&format!("Wasm bytes: {:?}", wasm_bytes).into());
-
-        WorkerOut::Debug {
-            breakpoints: dwarf_info.0,
-            files: dwarf_info.1,
-            breakpoint_buffer: buffer,
+        // Write the binary back to the fs
+        {
+            let mut file = exec
+                .fs
+                .new_open_options()
+                .write(true)
+                .truncate(true)
+                .open("/main.wasm")
+                .expect("Open main.wasm for writing");
+            file.write_all(&instrumented_wasm)
+                .await
+                .expect("Write instrumented binary");
         }
-        .send();
+
+        // so bkpt import can access it
+        let debugger = Debugger::new(locations, files);
+        debugger.send_debug_info();
+        Debugger::set_global(debugger);
     }
 
-    exec.step("main")
-        .binary("/main.wasm")
-        .run()
-        .await
-        .expect("Running succeeded");
+    // Run the main binary (with debug imports if in debug mode)
+    let mut main_step = exec.step("main").binary("/main.wasm");
+    if msg.is_debug {
+        main_step = main_step.debug();
+    }
+    main_step.run().await.expect("Running succeeded");
 
     // Print out the filesystem toplevel for debugging
     let root = exec

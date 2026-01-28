@@ -6,17 +6,18 @@ use std::sync::Arc;
 use tar::Archive;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
-use wasmer::{Module, RuntimeError, Store};
+use wasmer::{Function, Module, RuntimeError, Store};
 use wasmer_wasix::virtual_fs::AsyncReadExt;
 use wasmer_wasix::{
-    WasiEnv, WasiEnvBuilder, WasiError,
+    WasiEnv, WasiEnvBuilder, WasiError, WasiFunctionEnv,
     virtual_fs::{AsyncWriteExt, FileSystem, create_dir_all, mem_fs},
 };
 
 use web_sys::DedicatedWorkerGlobalScope;
 
-use crate::io::Stdout;
+use crate::debug::Debugger;
 use crate::io::Stdin;
+use crate::io::Stdout;
 use crate::runtime::JsRuntime;
 use crate::types::StdoutMode;
 
@@ -34,6 +35,7 @@ pub struct Step<'a> {
     binary: Option<String>,
     sysroot: Option<String>,
     union_fs: Option<Box<dyn FileSystem>>,
+    is_debug: bool,
 }
 
 impl Execution {
@@ -51,6 +53,7 @@ impl Execution {
             binary: None,
             sysroot: None,
             union_fs: None,
+            is_debug: false,
         }
     }
 }
@@ -89,6 +92,13 @@ impl<'a> Step<'a> {
         Arg: AsRef<[u8]>,
     {
         self.builder.add_args(args);
+        self
+    }
+
+    /// Enables debug mode for this step.
+    /// Provides the "debug" module with "bkpt" function import for instrumented binaries.
+    pub fn debug(mut self) -> Self {
+        self.is_debug = true;
         self
     }
 
@@ -153,9 +163,35 @@ impl<'a> Step<'a> {
             .ensure("Preopened root directory")?;
 
         /* Instantiate and run the binary */
-        let (instance, _env) = builder
-            .instantiate(module, &mut store)
-            .ensure("Instantiated Wasmer instance")?;
+        let instance = if self.is_debug {
+            // Have to manually build env and add import
+            let wasi_env = builder.build().ensure("Built WASI environment")?;
+
+            // Wrap in WasiFunctionEnv to get import object
+            let mut wasi_func_env = WasiFunctionEnv::new(&mut store, wasi_env);
+
+            let mut imports = wasi_func_env
+                .import_object(&mut store, &module)
+                .ensure("Created WASI import object")?;
+
+            // Uses the global Debugger set by worker.rs; this was a hack so that we can keep our desired interface but access it from here
+            let bkpt_func = Function::new_typed(&mut store, Debugger::handle_bkpt);
+            imports.define("debug", "bkpt", bkpt_func);
+
+            let instance = wasmer::Instance::new(&mut store, &module, &imports)
+                .ensure("Created instance with debug imports")?;
+
+            wasi_func_env
+                .initialize(&mut store, instance.clone())
+                .ensure("Initialized WASI")?;
+
+            instance
+        } else {
+            let (instance, _env) = builder
+                .instantiate(module, &mut store)
+                .ensure("Instantiated Wasmer instance")?;
+            instance
+        };
 
         let start = instance
             .exports
