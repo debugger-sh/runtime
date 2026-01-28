@@ -137,8 +137,7 @@ async fn start(msg: WorkerStart) {
             .expect("Read main.wasm");
 
         let dwarf_info = parse_dwarf_info(&wasm_bytes);
-
-        // TODO:instrument the binary so that each logical line has a call to bkpt
+        let instrumented_wasm = instrument_binary(&wasm_bytes, &dwarf_info.0);
 
         let num_breakpoints = dwarf_info.0.len();
         let bits_needed = num_breakpoints + 1; // +1 for Atomics wait/resume signal (sentinel)
@@ -148,8 +147,8 @@ async fn start(msg: WorkerStart) {
         let buffer = SharedArrayBuffer::new(bytes_needed);
 
         // TODO:remove after debugging
-        // web_sys::console::log_1(&format!("Dwarf info: {:?}", dwarf_info).into());
-        // web_sys::console::log_1(&format!("Wasm bytes: {:?}", wasm_bytes).into());
+        web_sys::console::log_1(&format!("Dwarf info: {:?}", dwarf_info).into());
+        web_sys::console::log_1(&format!("Wasm bytes: {:?}", wasm_bytes).into());
 
         WorkerOut::Debug {
             breakpoints: dwarf_info.0,
