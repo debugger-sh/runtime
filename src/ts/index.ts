@@ -13,8 +13,11 @@ export class Runtime {
   private in = new StdinStream();
   private debugger = new Debugger();
 
-  private currentWorker: Worker | null = null; // current worker instance
-  private stopResolver: ((value: void) => void) | null = null; // promise resolver for stop()
+  /** A function which, when called, rejects the ongoing execution */
+  private rejector?: () => void;
+
+  /** The ongoing `run` promise, if any */
+  private promise?: Promise<void>;
 
   /**
    * The programming language of this runtime.
@@ -77,135 +80,64 @@ export class Runtime {
    * This will cause the run() promise to resolve immediately.
    */
   public stop(): void {
-    if (this.currentWorker) {
-      this.currentWorker.terminate();
-      this.out.removeWorker(this.currentWorker);
-      this.err.removeWorker(this.currentWorker);
-      this.currentWorker = null;
-      this.in.clear();
-      // Resolve the stop promise if it exists, so run() doesn't hang
-      if (this.stopResolver) {
-        this.stopResolver();
-        this.stopResolver = null;
-      }
-    }
+    this.rejector?.();
   }
 
-  // TODO: Make this function reentrant
-  async run(): Promise<void> {
+  public async run() {
+    if (this.promise) return this.promise;
+    this.promise = this.execute();
+    await this.promise;
+    this.promise = undefined;
+  }
+
+  private async execute() {
     const worker = new RustWorker();
-    this.currentWorker = worker;
-
-    // Store stop callback reference so error handler can clean it up
-    let stopCallback: ((message: MessageEvent<WorkerOut>) => void) | null = null;
-    let stopResolved = false;
-
-    /* Set up error event listener to catch any errors from the worker */
-    const errorHandler = (event: ErrorEvent) => {
-      console.error('Worker error:', event.error || event.message, event);
-      // Ensure cleanup happens and stop promise resolves
-      if (this.stopResolver) {
-        stopResolved = true;
-        this.stopResolver();
-        this.stopResolver = null;
-      }
-      // Remove stop message listener if it exists
-      if (stopCallback) {
-        worker.removeEventListener('message', stopCallback);
-        stopCallback = null;
-      }
-      // Clean up worker references
-      this.out.removeWorker(worker);
-      this.err.removeWorker(worker);
-      this.in.clear();
-      if (this.currentWorker === worker) {
-        this.currentWorker = null;
-      }
-    };
-    worker.addEventListener('error', errorHandler);
 
     /* Set up handling for stdout/stderr */
     this.out.addWorker(worker);
     this.err.addWorker(worker);
     this.debugger[DebuggerInternals].addWorker(worker);
 
-    /* Wait for the worker to send us a Ready message */
-    await new Promise<void>((resolve) => {
-      const callback = (message: MessageEvent<WorkerOut>) => {
-        if (message.data.type === 'ready') {
-          worker.removeEventListener('message', callback);
-          resolve();
-        }
-      };
-      worker.addEventListener('message', callback);
-    });
+    try {
+      await new Promise<void>(async (resolve, reject) => {
+        this.rejector = () => reject('stopped worker');
 
-    /* At this point in the code, the worker is ready to receive messages */
-    worker.onmessage = (e) => console.log(e);
+        /** If the worker ever errors, we crash this promise */
+        worker.addEventListener('error', (evt) => reject(evt.error));
 
-    /**
-     * Run the worker, and wait for it to send us a Stop message.
-     * Note that we must set up the listener *before* running the worker
-     * to avoid a race condition.
-     *
-     * The worker will always send a 'stop' message:
-     * - On successful completion
-     * - On errors/panics (via StopGuard Drop implementation)
-     *
-     * The two ways stopping happens:
-     * 1. The user calls stop() (manually terminates worker)
-     * 2. The worker sends us a Stop message (normal completion or error)
-     */
-    const stop = new Promise<void>((resolve) => {
-      this.stopResolver = resolve;
+        /* Wait for the worker to send us a Ready message */
+        await new Promise<void>((resolve) => {
+          const callback = (message: MessageEvent<WorkerOut>) => {
+            if (message.data.type === 'ready') {
+              worker.removeEventListener('message', callback);
+              resolve();
+            }
+          };
+          worker.addEventListener('message', callback);
+        });
 
-      const doResolve = () => {
-        if (stopResolved) return;
-        stopResolved = true;
-        if (stopCallback) {
-          worker.removeEventListener('message', stopCallback);
-          stopCallback = null;
-        }
-        this.stopResolver = null;
-        resolve();
-      };
+        worker.addEventListener('message', (message: MessageEvent<WorkerOut>) => {
+          if (message.data.type === 'stop') resolve();
+        });
 
-      stopCallback = (message: MessageEvent<WorkerOut>) => {
-        if (message.data.type === 'stop') {
-          doResolve();
-        }
-      };
-
-      worker.addEventListener('message', stopCallback);
-    });
-
-    const message: WorkerStart = {
-      fs: this.fs,
-      stdin_buffer: this.in.buffer,
-      is_debug: true,
-    };
-    worker.postMessage(message);
-
-    await stop;
-
-    /* This is just good hygiene */
-    worker.removeEventListener('error', errorHandler);
-    if (stopCallback) {
-      worker.removeEventListener('message', stopCallback);
+        const message: WorkerStart = {
+          fs: this.fs,
+          stdin_buffer: this.in.buffer,
+          is_debug: true,
+        };
+        worker.postMessage(message);
+      });
+    } catch (err: unknown) {
+      console.log(`Unexpected error: ${err}`);
+    } finally {
+      this.rejector = undefined;
+      this.out.removeWorker(worker);
+      this.err.removeWorker(worker);
+      this.in.clear();
+      this.debugger[DebuggerInternals].removeWorker(worker);
+      worker.terminate();
     }
-    this.out.removeWorker(worker);
-    this.err.removeWorker(worker);
-    this.in.clear();
-    this.debugger[DebuggerInternals].removeWorker(worker);
-
-    this.currentWorker = null;
-    this.stopResolver = null;
   }
-
-  /* visit later:
-        runtime.stdout.pipeTo(console.log);
-        runtime.stdin.write("haha ");
-   */
 }
 
 class StdoutStream {
