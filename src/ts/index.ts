@@ -298,15 +298,13 @@ export class Breakpoint {
     this._enabled = enabled;
     if (this.status !== BreakpointStatus.Resolved) return this;
     this._locations.forEach((idx) => {
-      const bufIdx = idx + 1; // +1 to skip sentinel at index 0
-      const buffer = this.debugger[Internals].buffer;
-      if (bufIdx < 1 || bufIdx >= buffer.length)
-        throw new Error(`OOB breakpoint buffer access: ${bufIdx}`);
+      const flags = this.debugger[Internals].flags;
+      if (idx < 0 || idx >= flags.length) throw new Error(`OOB breakpoint flag access: ${idx}`);
 
-      if (enabled) buffer[bufIdx]++;
-      else if (buffer[bufIdx] === 0)
-        throw new Error(`Attempt to make breakpoint buffer at ${bufIdx} negative`);
-      else buffer[bufIdx]--;
+      if (enabled) flags[idx]++;
+      else if (flags[idx] === 0)
+        throw new Error(`Attempt to make breakpoint flag at ${idx} negative`);
+      else flags[idx]--;
     });
     return this;
   }
@@ -388,14 +386,17 @@ export class Debugger {
     removeWorker(worker: Worker): void;
 
     /**
-     * The breakpoint buffer.
-     *
-     * Each byte at index N in this buffer contains the number of breakpoints that are
-     * enabled on the location with index N. For example, if I add two breakpoints, `b1` and `b2`, which
-     * both map to location n, then `buffer[n] = 2`. A location will be "hit" if its number of
-     * enabled breakpoints is positive.
+     * Int32Array view over bytes 0..3 of the SharedArrayBuffer.
+     * Used with `Atomics.notify()` to resume execution after a breakpoint hit.
      */
-    buffer: Uint8Array;
+    sentinel: Int32Array;
+
+    /**
+     * Uint8Array view over bytes 4+ of the SharedArrayBuffer.
+     * `flags[N]` is the enable count for location N (0-based).
+     * A location is "hit" if its count is positive.
+     */
+    flags: Uint8Array;
   };
 
   private _locations: Array<Location> = [];
@@ -412,7 +413,8 @@ export class Debugger {
     this[Internals] = {
       addWorker: this.addWorker.bind(this),
       removeWorker: this.removeWorker.bind(this),
-      buffer: new Uint8Array(),
+      sentinel: new Int32Array(),
+      flags: new Uint8Array(),
     };
 
     this.onMessage = this.onMessage.bind(this);
@@ -451,7 +453,8 @@ export class Debugger {
       address: loc.address,
     }));
 
-    this[Internals].buffer = new Uint8Array(data.breakpoint_buffer);
+    this[Internals].sentinel = new Int32Array(data.breakpoint_buffer, 0, 1);
+    this[Internals].flags = new Uint8Array(data.breakpoint_buffer, 4);
     this._breakpoints.forEach((bp) => bp[Internals].resolve());
   }
 

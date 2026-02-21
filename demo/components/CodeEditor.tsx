@@ -126,6 +126,7 @@ export default function CodeEditor() {
         // Ignore abort errors
       });
       rt.fs = { 'main.c': code };
+      rt.debugger.addBreakpoint('main.c:6');
 
       // Get the underlying xterm.js terminal instance for stdin handling
       const term = terminalRef.current?.getTerminal();

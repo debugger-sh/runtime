@@ -9,26 +9,30 @@ thread_local! {
 
 /// Debugger state that manages breakpoint locations and their enable/disable state.
 ///
-/// The breakpoint buffer is a SharedArrayBuffer with two purposes:
+/// The breakpoint buffer is a SharedArrayBuffer with two regions:
 ///
-/// **Index 0 — Pause/Resume Signal (Sentinel)**
-/// - When a breakpoint is hit, the Rust side calls `Atomics.wait()` on index 0
-/// - This blocks execution until TypeScript calls `Atomics.notify()` on index 0
-/// - Value doesn't matter; we just wait for the notification
+/// **Bytes 0..3 — Pause/Resume Signal (Sentinel)**
+/// Viewed as `Int32Array(buffer, 0, 1)`.
+/// - When a breakpoint is hit, Rust calls `Atomics.wait()` on element 0
+/// - This blocks until TypeScript calls `Atomics.notify()` to resume
 ///
-/// **Index 1..N — Breakpoint Enable/Disable Flags**
-/// - Index N corresponds to `locations[N-1]`
-/// - Value 0 = breakpoint disabled
-/// - Value 1 = breakpoint enabled
+/// **Bytes 4.. — Breakpoint Enable/Disable Flags**
+/// Viewed as `Uint8Array(buffer, 4)`.
+/// - flags[N] corresponds to `locations[N]` (0-based)
+/// - Value 0 = disabled, >0 = number of breakpoints enabled on that location
+///
+/// The instrumented WASM uses 1-based indices: `bkpt(N)` checks `flags[N-1]`.
 pub struct Debugger {
     locations: Vec<LocationInfo>,
     files: Vec<String>,
     buffer: SharedArrayBuffer,
 }
 
+const SENTINEL_BYTES: u32 = 4;
+
 impl Debugger {
     pub fn new(locations: Vec<LocationInfo>, files: Vec<String>) -> Self {
-        let buffer_size = (locations.len() + 1) as u32;
+        let buffer_size = SENTINEL_BYTES + locations.len() as u32;
         let buffer = SharedArrayBuffer::new(buffer_size);
 
         Self {
@@ -60,32 +64,25 @@ impl Debugger {
     }
 
     /// Check if a breakpoint at the given index is enabled.
-    ///
-    /// This reads from the SharedArrayBuffer using atomic operations.
-    /// Returns false for index 0 (sentinel) or out-of-bounds indices.
+    /// Index is 1-based (from instrumented WASM). Returns false for 0 or out-of-bounds.
     pub fn bkpt_enabled(&self, index: u32) -> bool {
         if index == 0 || index as usize > self.locations.len() {
             return false;
         }
 
-        let view = js_sys::Int8Array::new(&self.buffer);
-        let value = js_sys::Atomics::load(&view, index).unwrap_or(0);
-        value != 0
+        let flags = js_sys::Uint8Array::new_with_byte_offset_and_length(
+            &self.buffer,
+            SENTINEL_BYTES,
+            self.locations.len() as u32,
+        );
+        flags.get_index(index - 1) != 0
     }
 
-    /// Called when a breakpoint is hit. Blocks until TypeScript signals resume.
-    ///
-    /// This waits on index 0 (the sentinel) using `Atomics.wait()`.
-    /// TypeScript will call `Atomics.notify()` on index 0 when the user
-    /// wants to resume execution.
-    ///
-    /// The `expected_value` parameter is the current value at index 0.
-    /// If TypeScript has already changed it, the wait returns immediately.
+    /// Blocks until TypeScript signals resume via `Atomics.notify()` on the sentinel.
     pub fn wait_for_resume(&self) {
-        let view = js_sys::Int32Array::new(&self.buffer);
-        let current = js_sys::Atomics::load(&view, 0).unwrap_or(0);
-        // Wait until TypeScript notifies us
-        let _ = js_sys::Atomics::wait(&view, 0, current);
+        let sentinel = js_sys::Int32Array::new_with_byte_offset_and_length(&self.buffer, 0, 1);
+        let current = js_sys::Atomics::load(&sentinel, 0).unwrap_or(0);
+        let _ = js_sys::Atomics::wait(&sentinel, 0, current);
     }
 
     /// Check if breakpoint is enabled, and if so, wait for resume.
