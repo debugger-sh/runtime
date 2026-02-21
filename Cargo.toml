@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/wasm-instrument"]
+members = [".", "crates/wasm-instrument", "util"]
 
 [package]
 name = "runtime"
