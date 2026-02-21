@@ -1,17 +1,9 @@
 use crate::types::LocationInfo;
-use gimli::{EndianSlice, LittleEndian, Reader};
-use object::{Object, ObjectSection};
-use std::borrow::Cow;
-use std::collections::HashMap;
-use wasm_encoder::Instruction;
 use wasmer_wasix::virtual_fs::{AsyncReadExt, FileSystem, mem_fs};
 
-/// ============================================================================
-/// HELPERS
-/// ============================================================================
+pub use wasm_instrument::{parse_dwarf_info as parse_dwarf_info_inner, instrument_binary as instrument_binary_inner};
 
 /// Get the WASM bytes from the filesystem.
-/// Returns the WASM bytes or an error if the file does not exist.
 pub async fn get_wasm_bytes(
     fs: &mem_fs::FileSystem,
     path: &str,
@@ -30,287 +22,21 @@ pub async fn get_wasm_bytes(
     Ok(wasm_bytes)
 }
 
-/// Build a filename from a file entry, handling directory prefixes.
-fn build_filename<R: Reader>(
-    dwarf: &gimli::Dwarf<R>,
-    unit: &gimli::Unit<R>,
-    file_entry: &gimli::FileEntry<R>,
-) -> Result<String, gimli::Error> {
-    let mut path = String::new();
-
-    // Add directory if present
-    if let Some(dir) = file_entry.directory(unit.line_program.as_ref().unwrap().header()) {
-        let dir_str = dwarf.attr_string(unit, dir)?;
-        let dir_str = dir_str.to_string_lossy()?;
-        if !dir_str.is_empty() && dir_str != "." {
-            path.push_str(&dir_str);
-            if !path.ends_with('/') {
-                path.push('/');
-            }
-        }
-    }
-
-    // Add filename
-    let name = dwarf.attr_string(unit, file_entry.path_name())?;
-    path.push_str(&name.to_string_lossy()?);
-
-    Ok(path)
-}
-
-/// ============================================================================
-/// DWARF PARSING
-/// ============================================================================
-
-/// Parse DWARF debug info from WASM bytes to extract breakpoint locations.
-///
-/// Returns (locations, files) where:
-/// - locations: All possible breakpoint locations (file index, line, col)
-/// - files: Deduplicated list of source filenames
+/// Parse DWARF debug info, logging errors to the browser console.
 pub fn parse_dwarf_info(wasm_bytes: &[u8]) -> (Vec<LocationInfo>, Vec<String>) {
-    match parse_dwarf_inner(wasm_bytes) {
-        Ok(result) => result,
+    match parse_dwarf_info_inner(wasm_bytes) {
+        Ok((locs, files)) => {
+            let locs = locs.into_iter().map(LocationInfo::from).collect();
+            (locs, files)
+        }
         Err(e) => {
-            web_sys::console::error_1(&format!("DWARF parsing error: {:?}", e).into());
+            web_sys::console::error_1(&format!("DWARF parsing error: {}", e).into());
             (vec![], vec![])
         }
     }
 }
 
-fn parse_dwarf_inner(wasm_bytes: &[u8]) -> Result<(Vec<LocationInfo>, Vec<String>), gimli::Error> {
-    // Parse the WASM file
-    let object = match object::File::parse(wasm_bytes) {
-        Ok(obj) => obj,
-        Err(e) => {
-            web_sys::console::error_1(&format!("Failed to parse WASM: {:?}", e).into());
-            return Ok((vec![], vec![]));
-        }
-    };
-
-    // Load DWARF sections from the WASM file
-    let load_section = |id: gimli::SectionId| -> Result<Cow<'_, [u8]>, gimli::Error> {
-        Ok(object
-            .section_by_name(id.name())
-            .and_then(|s| s.uncompressed_data().ok())
-            .unwrap_or(Cow::Borrowed(&[])))
-    };
-
-    let dwarf_sections = gimli::DwarfSections::load(load_section)?;
-    let dwarf =
-        dwarf_sections.borrow(|section| EndianSlice::new(Cow::as_ref(section), LittleEndian));
-
-    let mut locations = Vec::new();
-    let mut files: Vec<String> = Vec::new();
-    let mut file_map: HashMap<String, u32> = HashMap::new();
-
-    // Iterate over compilation units
-    let mut units = dwarf.units();
-    while let Some(header) = units.next()? {
-        let unit = dwarf.unit(header)?;
-
-        // Get the line program for this unit
-        let Some(program) = unit.line_program.clone() else {
-            continue;
-        };
-
-        // Execute the line program to get all rows
-        let mut rows = program.rows();
-        while let Some((header, row)) = rows.next_row()? {
-            // Skip rows that aren't statement beginnings (not useful for breakpoints)
-            if !row.is_stmt() {
-                continue;
-            }
-
-            // Get the file entry
-            let Some(file_entry) = row.file(header) else {
-                continue;
-            };
-
-            // Build the filename
-            let filename = build_filename(&dwarf, &unit, file_entry)?;
-
-            // Get or insert file index
-            let file_idx = if let Some(&idx) = file_map.get(&filename) {
-                idx
-            } else {
-                let idx = files.len() as u32;
-                files.push(filename.clone());
-                file_map.insert(filename, idx);
-                idx
-            };
-
-            let line = row.line().map(|l| l.get()).unwrap_or(0) as u32;
-            let col = match row.column() {
-                gimli::ColumnType::LeftEdge => 0,
-                gimli::ColumnType::Column(c) => c.get() as u32,
-            };
-
-            locations.push(LocationInfo {
-                file: file_idx,
-                line,
-                col,
-                address: row.address(),
-            });
-        }
-    }
-
-    Ok((locations, files))
-}
-
-/// ============================================================================
-/// WASM INSTRUMENTATION
-/// ============================================================================
-
-struct Instrumenter {
-    encoder: wasm_encoder::reencode::RoundtripReencoder,
-    bkpt_type_index: u32,
-    bkpt_fn_index: u32,
-    /// Number of function imports in the original module (before we add "debug"."bkpt").
-    num_imported_functions: u32,
-    /// Byte offset in the wasm binary where the code section payload starts.
-    code_section_start: usize,
-    /// Map from code-section byte offset to breakpoint index (1-based; 0 is sentinel).
-    breakpoints: HashMap<u64, u32>,
-}
-
-impl Instrumenter {
-    fn new(locations: &[LocationInfo]) -> Self {
-        let breakpoints: HashMap<u64, u32> = locations
-            .iter()
-            .enumerate()
-            .map(|(i, loc)| (loc.address, (i + 1) as u32))
-            .collect();
-        Self {
-            encoder: wasm_encoder::reencode::RoundtripReencoder,
-            bkpt_type_index: 0,
-            bkpt_fn_index: 0,
-            num_imported_functions: 0,
-            code_section_start: 0,
-            breakpoints,
-        }
-    }
-}
-
-fn count_function_imports(imports: &wasmparser::Imports<'_>) -> u32 {
-    use wasmparser::TypeRef;
-    match imports {
-        wasmparser::Imports::Single(_, import) => {
-            matches!(import.ty, TypeRef::Func(_) | TypeRef::FuncExact(_)) as u32
-        }
-        wasmparser::Imports::Compact1 { items, .. } => items
-            .clone()
-            .into_iter()
-            .filter(|item| {
-                item.as_ref().map_or(false, |i| {
-                    matches!(i.ty, TypeRef::Func(_) | TypeRef::FuncExact(_))
-                })
-            })
-            .count() as u32,
-        wasmparser::Imports::Compact2 { ty, names, .. } => {
-            if matches!(ty, TypeRef::Func(_) | TypeRef::FuncExact(_)) {
-                names.count()
-            } else {
-                0
-            }
-        }
-    }
-}
-
-impl wasm_encoder::reencode::Reencode for Instrumenter {
-    type Error = core::convert::Infallible;
-
-    fn function_index(
-        &mut self,
-        func: u32,
-    ) -> Result<u32, wasm_encoder::reencode::Error<Self::Error>> {
-        // Our new import is appended after all original imports, so indices >= num_imported_functions
-        // refer to defined functions and must be shifted by +1.
-        Ok(if func >= self.num_imported_functions {
-            func + 1
-        } else {
-            func
-        })
-    }
-
-    fn parse_code_section(
-        &mut self,
-        code: &mut wasm_encoder::CodeSection,
-        section: wasmparser::CodeSectionReader<'_>,
-    ) -> Result<(), wasm_encoder::reencode::Error<Self::Error>> {
-        self.code_section_start = section.range().start;
-        web_sys::console::log_1(
-            &format!("Code section start is: 0x{:x}", self.code_section_start).into(),
-        );
-        wasm_encoder::reencode::utils::parse_code_section(self, code, section)
-    }
-
-    fn parse_type_section(
-        &mut self,
-        types: &mut wasm_encoder::TypeSection,
-        section: wasmparser::TypeSectionReader<'_>,
-    ) -> Result<(), wasm_encoder::reencode::Error<Self::Error>> {
-        self.encoder.parse_type_section(types, section)?;
-        types.ty().function([wasm_encoder::ValType::I32], []);
-        self.bkpt_type_index = types.len() - 1;
-        Ok(())
-    }
-
-    fn parse_import_section(
-        &mut self,
-        imports: &mut wasm_encoder::ImportSection,
-        section: wasmparser::ImportSectionReader<'_>,
-    ) -> Result<(), wasm_encoder::reencode::Error<Self::Error>> {
-        self.num_imported_functions = 0u32;
-        for batch in section {
-            let batch = batch?;
-            self.num_imported_functions += count_function_imports(&batch);
-            wasm_encoder::reencode::utils::parse_imports(&mut self.encoder, imports, batch)?;
-        }
-
-        imports.import(
-            "debug",
-            "bkpt",
-            wasm_encoder::EntityType::Function(self.bkpt_type_index),
-        );
-        self.bkpt_fn_index = self.num_imported_functions;
-
-        Ok(())
-    }
-
-    fn parse_function_body(
-        &mut self,
-        code: &mut wasm_encoder::CodeSection,
-        func: wasmparser::FunctionBody<'_>,
-    ) -> Result<(), wasm_encoder::reencode::Error<Self::Error>> {
-        let mut f = wasm_encoder::reencode::utils::new_function_with_parsed_locals(self, &func)?;
-        let mut reader = func
-            .get_operators_reader()
-            .map_err(wasm_encoder::reencode::Error::from)?;
-        while !reader.eof() {
-            let (op, pos) = reader
-                .read_with_offset()
-                .map_err(wasm_encoder::reencode::Error::from)?;
-            let code_offset = pos.saturating_sub(self.code_section_start) as u64;
-            if let Some(&idx) = self.breakpoints.get(&code_offset) {
-                web_sys::console::log_1(
-                    &format!(
-                        "Inserting breakpoint call at code offset 0x{:x}, abs offset 0x{:x}, bkpt idx {}",
-                        code_offset, pos, idx
-                    )
-                    .into(),
-                );
-                f.instruction(&Instruction::I32Const(idx as i32));
-                f.instruction(&Instruction::Call(self.bkpt_fn_index));
-            }
-
-            let insn = self.instruction(op)?;
-            f.instruction(&insn);
-        }
-        reader.finish()?;
-        code.function(&f);
-        Ok(())
-    }
-}
-
+/// Instrument a WASM binary, logging progress to the browser console.
 pub fn instrument_binary(wasm_bytes: &[u8], locations: &[LocationInfo]) -> Result<Vec<u8>, String> {
     web_sys::console::log_1(
         &format!(
@@ -321,17 +47,11 @@ pub fn instrument_binary(wasm_bytes: &[u8], locations: &[LocationInfo]) -> Resul
         .into(),
     );
 
-    let mut reencoder = Instrumenter::new(locations);
-    let mut module = wasm_encoder::Module::new();
-    wasm_encoder::reencode::utils::parse_core_module(
-        &mut reencoder,
-        &mut module,
-        wasmparser::Parser::new(0),
-        wasm_bytes,
-    )
-    .map_err(|e| format!("Failed to reencode WASM: {:?}", e))?;
+    let lib_locs: Vec<wasm_instrument::LocationInfo> =
+        locations.iter().map(|l| l.into()).collect();
 
-    let result = module.finish();
+    let result = instrument_binary_inner(wasm_bytes, &lib_locs)?;
+
     web_sys::console::log_1(
         &format!("instrument_binary: output {} bytes", result.len()).into(),
     );
