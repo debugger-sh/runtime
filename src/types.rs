@@ -44,9 +44,10 @@ pub enum WorkerOut<'a> {
     #[serde(rename = "debug")]
     Debug {
         locations: Vec<LocationInfo>,
+        ranges: Vec<BreakpointRange>,
         files: Vec<String>,
-        /// Bitfield where index N corresponds to breakpoint N.
-        /// Index 0 is a sentinel (always 0). Length = breakpoints.len() + 1.
+        /// Int32 slots where index N corresponds to breakpoint N.
+        /// Index 0 is a pause/resume sentinel. Slots 1..N are breakpoint counters.
         #[serde(with = "serde_wasm_bindgen::preserve")]
         breakpoint_buffer: js_sys::SharedArrayBuffer,
     },
@@ -74,6 +75,15 @@ pub struct LocationInfo {
     pub col: u32,
     /// Byte offset into the WASM code section for instrumentation
     pub address: u64,
+}
+
+#[derive(Debug, Clone, Tsify, Serialize)]
+pub struct BreakpointRange {
+    pub file: u32,
+    pub start_line: u32,
+    pub end_line: u32,
+    /// 1-based breakpoint index in the shared breakpoint buffer.
+    pub bkpt: u32,
 }
 
 impl<'a> WorkerOut<'a> {

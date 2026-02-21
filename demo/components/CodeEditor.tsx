@@ -127,6 +127,12 @@ export default function CodeEditor() {
       });
       rt.fs = { 'main.c': code };
 
+      // Example breakpoints using the runtime debugger interface.
+      // These resolve after debug symbols are received from the worker.
+      // (For the default snippet, these correspond to cin/cout lines.)
+      rt.debugger.addBreakpoint('main.c:5');
+      rt.debugger.addBreakpoint('main.c:6');
+
       // Get the underlying xterm.js terminal instance for stdin handling
       const term = terminalRef.current?.getTerminal();
       if (!term) {

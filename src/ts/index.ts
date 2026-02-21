@@ -248,6 +248,25 @@ export type Location = {
   readonly col: number;
 };
 
+export type BreakableRange = {
+  readonly file: string;
+  readonly startLine: number;
+  readonly endLine: number;
+  /** 1-based index in the shared breakpoint buffer. */
+  readonly bkpt: number;
+};
+
+type DebugRangeWire = {
+  file: number;
+  start_line: number;
+  end_line: number;
+  bkpt: number;
+};
+
+type DebugMessageWithRanges = Extract<WorkerOut, { type: 'debug' }> & {
+  ranges?: DebugRangeWire[];
+};
+
 export type BreakpointSpecifier = string | number;
 
 export const BreakpointStatus = {
@@ -283,7 +302,7 @@ export class Breakpoint {
    * with multiple instantiations. Breaking on that function will cause us to break in multiple
    * different places, even though we only set one breakpoint e.g. `main.c:foo`.
    *  */
-  private _locations: number[] = [];
+  private _bufferIndices: number[] = [];
 
   public get enabled() {
     return this._enabled;
@@ -297,14 +316,15 @@ export class Breakpoint {
     if (this.enabled === enabled) return this;
     this._enabled = enabled;
     if (this.status !== BreakpointStatus.Resolved) return this;
-    this._locations.forEach((idx) => {
+    this._bufferIndices.forEach((bufferIdx) => {
       const buffer = this.debugger[Internals].buffer;
-      if (idx < 0 || idx >= buffer.length) throw new Error(`OOB breakpoint buffer access: ${idx}`);
+      if (bufferIdx < 1 || bufferIdx >= buffer.length)
+        throw new Error(`OOB breakpoint buffer access: ${bufferIdx}`);
 
-      if (enabled) buffer[idx]++;
-      else if (buffer[idx] === 0)
-        throw new Error(`Attempt to make breakpoint buffer at ${idx} negative`);
-      else buffer[idx]--;
+      if (enabled) buffer[bufferIdx]++;
+      else if (buffer[bufferIdx] === 0)
+        throw new Error(`Attempt to make breakpoint buffer at ${bufferIdx} negative`);
+      else buffer[bufferIdx]--;
     });
     return this;
   }
@@ -328,11 +348,12 @@ export class Breakpoint {
     if (this._status === BreakpointStatus.Removed) return;
 
     const locations = this.debugger.locations;
-    this._locations = [];
+    const ranges = this.debugger.ranges;
+    this._bufferIndices = [];
 
     if (typeof this.where === 'number') {
       const idx = this.where;
-      if (idx >= 0 && idx < locations.length) this._locations = [idx];
+      if (idx >= 0 && idx < locations.length) this._bufferIndices = [idx + 1];
     }
 
     // GDB-style string: [file:][function|line]
@@ -345,22 +366,28 @@ export class Breakpoint {
       const line = isLineNum ? parseInt(rest, 10) : undefined;
       const fn = isLineNum ? undefined : rest;
 
-      for (let i = 0; i < locations.length; i++) {
-        const loc = locations[i];
-        if (fileSpec !== undefined && loc.file !== fileSpec && loc.file !== `/${fileSpec}`)
-          continue;
-        if (line !== undefined) {
-          if (loc.line !== line) continue;
-        } else if (fn !== undefined) {
-          if (loc.function !== fn) continue;
-        } else continue;
-
-        this._locations.push(i);
+      if (line !== undefined) {
+        for (const range of ranges) {
+          if (fileSpec !== undefined && range.file !== fileSpec && range.file !== `/${fileSpec}`)
+            continue;
+          if (line < range.startLine || line > range.endLine) continue;
+          this._bufferIndices.push(range.bkpt);
+        }
+      } else {
+        for (let i = 0; i < locations.length; i++) {
+          const loc = locations[i];
+          if (fileSpec !== undefined && loc.file !== fileSpec && loc.file !== `/${fileSpec}`)
+            continue;
+          if (fn !== undefined && loc.function !== fn) continue;
+          this._bufferIndices.push(i + 1);
+        }
       }
     }
 
+    this._bufferIndices = Array.from(new Set(this._bufferIndices));
+
     this._status = BreakpointStatus.Pending;
-    if (this._locations.length > 0) this._status = BreakpointStatus.Resolved;
+    if (this._bufferIndices.length > 0) this._status = BreakpointStatus.Resolved;
 
     // TODO: There is a race condition here where, once the worker sends over
     // the breakpoint buffer, it manages to start running code before the enabled
@@ -385,20 +412,18 @@ export class Debugger {
     addWorker(worker: Worker): void;
     removeWorker(worker: Worker): void;
 
-    /**
-     * The breakpoint buffer.
-     *
-     * Each byte at index N in this buffer contains the number of breakpoints that are
-     * enabled on the location with index N. For example, if I add two breakpoints, `b1` and `b2`, which
-     * both map to location n, then `buffer[n] = 2`. A location will be "hit" if its number of
-     * enabled breakpoints is positive.
-     */
-    buffer: Uint8Array;
+    /** Shared Int32 slots: [0]=resume sentinel, [1..N]=breakpoint enable counters. */
+    buffer: Int32Array;
   };
 
   private _locations: Array<Location> = [];
   public get locations(): ReadonlyArray<Location> {
     return this._locations;
+  }
+
+  private _ranges: Array<BreakableRange> = [];
+  public get ranges(): ReadonlyArray<BreakableRange> {
+    return this._ranges;
   }
 
   private _breakpoints: Set<Breakpoint> = new Set();
@@ -410,7 +435,7 @@ export class Debugger {
     this[Internals] = {
       addWorker: this.addWorker.bind(this),
       removeWorker: this.removeWorker.bind(this),
-      buffer: new Uint8Array(),
+      buffer: new Int32Array(),
     };
 
     this.onMessage = this.onMessage.bind(this);
@@ -441,14 +466,21 @@ export class Debugger {
   private onMessage(event: MessageEvent<WorkerOut>) {
     const data = event.data;
     if (data.type !== 'debug') return;
+    const debugData = data as DebugMessageWithRanges;
 
-    this._locations = data.locations.map((loc) => ({
-      file: data.files[loc.file],
+    this._locations = debugData.locations.map((loc) => ({
+      file: debugData.files[loc.file],
       line: loc.line,
       col: loc.col,
     }));
+    this._ranges = (debugData.ranges ?? []).map((range) => ({
+      file: debugData.files[range.file],
+      startLine: range.start_line,
+      endLine: range.end_line,
+      bkpt: range.bkpt,
+    }));
 
-    this[Internals].buffer = new Uint8Array(data.breakpoint_buffer);
+    this[Internals].buffer = new Int32Array(debugData.breakpoint_buffer);
     this._breakpoints.forEach((bp) => bp[Internals].resolve());
   }
 

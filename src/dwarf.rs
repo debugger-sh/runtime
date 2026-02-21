@@ -1,4 +1,4 @@
-use crate::types::LocationInfo;
+use crate::types::{BreakpointRange, LocationInfo};
 use gimli::{EndianSlice, LittleEndian, Reader};
 use object::{Object, ObjectSection};
 use std::borrow::Cow;
@@ -158,7 +158,7 @@ fn parse_dwarf_inner(wasm_bytes: &[u8]) -> Result<(Vec<LocationInfo>, Vec<String
 /// ============================================================================
 /// WASM INSTRUMENTATION
 /// ============================================================================
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Instrument a WASM binary by inserting `bkpt` calls at line boundaries.
 ///
@@ -168,20 +168,38 @@ use std::collections::BTreeMap;
 ///
 /// Adds import: `(import "debug" "bkpt" (func (param i32)))`
 /// The i32 param is the breakpoint index (1-based, 0 is sentinel).
-pub fn instrument_binary(wasm_bytes: &[u8], locations: &[LocationInfo]) -> Result<Vec<u8>, String> {
+///
+/// Returns:
+/// - instrumented wasm bytes
+/// - list of breakpoint indices that were actually inserted
+pub fn instrument_binary(
+    wasm_bytes: &[u8],
+    locations: &[LocationInfo],
+) -> Result<(Vec<u8>, Vec<LocationInfo>, Vec<BreakpointRange>), String> {
     use walrus::ir::*;
     use walrus::*;
+    use std::collections::{HashMap, HashSet};
 
-    // Only unique addresses get breakpoints (line boundaries from DWARF)
-    let mut addr_to_bkpt: BTreeMap<u64, u32> = BTreeMap::new();
-    for (i, loc) in locations.iter().enumerate() {
-        let bkpt_idx = (i + 1) as u32; // 1-based, 0 is sentinel
-        addr_to_bkpt.entry(loc.address).or_insert(bkpt_idx);
+    // One candidate per (file, line), selected directly from DWARF rows.
+    // This gives line-level breakpoints rather than instruction-level breakpoints.
+    let mut line_candidates: BTreeMap<(u32, u32), LocationInfo> = BTreeMap::new();
+    for loc in locations {
+        if loc.line == 0 {
+            continue;
+        }
+        let key = (loc.file, loc.line);
+        line_candidates
+            .entry(key)
+            .and_modify(|existing| {
+                if loc.address < existing.address {
+                    *existing = loc.clone();
+                }
+            })
+            .or_insert_with(|| loc.clone());
     }
+    let candidates: Vec<LocationInfo> = line_candidates.into_values().collect();
 
-    let mut config = ModuleConfig::default();
-    config.preserve_code_transform(true);
-    let mut module = config
+    let mut module = ModuleConfig::new()
         .parse(wasm_bytes)
         .map_err(|e| format!("Failed to parse WASM: {:?}", e))?;
 
@@ -198,56 +216,202 @@ pub fn instrument_binary(wasm_bytes: &[u8], locations: &[LocationInfo]) -> Resul
         })
         .collect();
 
-    // Instrument at the function level
+    // Bridge from walrus location ids to concrete insertion sites.
+    let mut instrloc_to_site: HashMap<(FunctionId, u32), (InstrSeqId, usize)> = HashMap::new();
+    let mut abs_offsets: Vec<(u64, FunctionId, u32)> = Vec::new();
+    let mut rel_offsets: Vec<(u64, FunctionId, u32)> = Vec::new();
+
+    #[derive(Default)]
+    struct Collector {
+        stack: Vec<(InstrSeqId, usize)>,
+        pairs: Vec<(u32, InstrSeqId, usize)>,
+    }
+    impl<'instr> Visitor<'instr> for Collector {
+        fn start_instr_seq(&mut self, seq: &'instr InstrSeq) {
+            self.stack.push((seq.id(), 0));
+        }
+        fn end_instr_seq(&mut self, _seq: &'instr InstrSeq) {
+            let _ = self.stack.pop();
+        }
+        fn visit_instr(&mut self, _instr: &'instr Instr, loc: &InstrLocId) {
+            if let Some((seq, idx)) = self.stack.last_mut() {
+                self.pairs.push((loc.data(), *seq, *idx));
+                *idx += 1;
+            }
+        }
+    }
+
+    for func_id in &func_ids {
+        let func = module.funcs.get(*func_id);
+        let FunctionKind::Local(local_func) = &func.kind else {
+            continue;
+        };
+
+        let mut collector = Collector::default();
+        dfs_in_order(&mut collector, local_func, local_func.entry_block());
+        for (loc_data, seq, idx) in collector.pairs {
+            instrloc_to_site.insert((*func_id, loc_data), (seq, idx));
+        }
+
+        let mut first_abs: Option<u64> = None;
+        for (off, loc_id) in &local_func.instruction_mapping {
+            let abs = *off as u64;
+            first_abs.get_or_insert(abs);
+            abs_offsets.push((abs, *func_id, loc_id.data()));
+            if let Some(base) = first_abs {
+                rel_offsets.push((abs.saturating_sub(base), *func_id, loc_id.data()));
+            }
+        }
+    }
+
+    abs_offsets.sort_by_key(|(off, _, _)| *off);
+    rel_offsets.sort_by_key(|(off, _, _)| *off);
+
+    let resolve_site = |addr: u64,
+                        table: &[(u64, FunctionId, u32)],
+                        instrloc_to_site: &HashMap<(FunctionId, u32), (InstrSeqId, usize)>|
+     -> Option<(FunctionId, InstrSeqId, usize)> {
+        let pos = table.partition_point(|(off, _, _)| *off <= addr);
+        if pos == 0 {
+            return None;
+        }
+        let (_, func_id, loc_data) = table[pos - 1];
+        instrloc_to_site
+            .get(&(func_id, loc_data))
+            .copied()
+            .map(|(seq, idx)| (func_id, seq, idx))
+    };
+
+    #[derive(Clone)]
+    struct Resolved {
+        location: LocationInfo,
+        func_id: FunctionId,
+        seq_id: InstrSeqId,
+        instr_idx: usize,
+    }
+
+    let mut resolved: Vec<Resolved> = Vec::new();
+    let mut seen_sites: HashSet<(FunctionId, InstrSeqId, usize)> = HashSet::new();
+    let mut unmatched_addresses = 0usize;
+
+    for loc in candidates {
+        let maybe_site = resolve_site(loc.address, &abs_offsets, &instrloc_to_site)
+            .or_else(|| resolve_site(loc.address, &rel_offsets, &instrloc_to_site));
+        if let Some((func_id, seq_id, instr_idx)) = maybe_site {
+            if seen_sites.insert((func_id, seq_id, instr_idx)) {
+                resolved.push(Resolved {
+                    location: loc,
+                    func_id,
+                    seq_id,
+                    instr_idx,
+                });
+            }
+        } else {
+            unmatched_addresses += 1;
+        }
+    }
+
+    resolved.sort_by_key(|r| (r.location.file, r.location.line, r.location.col, r.location.address));
+
+    let inserted_locations: Vec<LocationInfo> = resolved.iter().map(|r| r.location.clone()).collect();
+
+    // Build insertion plan from resolved sites with final 1-based bkpt indices.
+    let mut plan: HashMap<FunctionId, HashMap<InstrSeqId, Vec<(usize, u32)>>> = HashMap::new();
+    for (i, item) in resolved.iter().enumerate() {
+        let bkpt = (i + 1) as u32;
+        plan.entry(item.func_id)
+            .or_default()
+            .entry(item.seq_id)
+            .or_default()
+            .push((item.instr_idx, bkpt));
+    }
+
+    let mut inserted_breakpoints: BTreeSet<u32> = BTreeSet::new();
+    let mut skipped_out_of_bounds = 0usize;
+
     for func_id in func_ids {
+        let Some(by_seq) = plan.remove(&func_id) else {
+            continue;
+        };
         let func = module.funcs.get_mut(func_id);
         let FunctionKind::Local(local_func) = &mut func.kind else {
             continue;
         };
-
-        let entry_block = local_func.entry_block();
         let builder = local_func.builder_mut();
-        let mut seq = builder.instr_seq(entry_block);
 
-        // Gets the ix w original offsets
-        let instrs: Vec<(Instr, InstrLocId)> = seq.instrs_mut().drain(..).collect();
+        for (seq_id, mut inserts) in by_seq {
+            inserts.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
 
-        // Only interested in those at line boundaries
-        let mut to_insert: Vec<(usize, u32)> = Vec::new();
-        for (idx, (_instr, loc_id)) in instrs.iter().enumerate() {
-            let offset = loc_id.data() as u64;
-            if let Some(&bkpt_idx) = addr_to_bkpt.get(&offset) {
-                to_insert.push((idx, bkpt_idx));
+            let mut seq = builder.instr_seq(seq_id);
+            let instrs = seq.instrs_mut();
+            for (idx, bkpt) in inserts {
+                if idx > instrs.len() {
+                    skipped_out_of_bounds += 1;
+                    continue;
+                }
+                instrs.insert(
+                    idx,
+                    (
+                        Instr::Const(Const {
+                            value: Value::I32(bkpt as i32),
+                        }),
+                        Default::default(),
+                    ),
+                );
+                instrs.insert(
+                    idx + 1,
+                    (Instr::Call(Call { func: bkpt_func_id }), Default::default()),
+                );
+                inserted_breakpoints.insert(bkpt);
             }
-        }
-
-        // Cute trick to avoid indices getting messed up, instrument backwards
-        to_insert.sort_by(|a, b| b.0.cmp(&a.0));
-
-        // The magic
-        let mut instrs = instrs;
-        for (idx, bkpt_idx) in to_insert {
-            // Insert: i32.const <bkpt_idx>; call $bkpt
-            instrs.insert(
-                idx,
-                (Instr::Call(Call { func: bkpt_func_id }), Default::default()),
-            );
-            instrs.insert(
-                idx,
-                (
-                    Instr::Const(Const {
-                        value: Value::I32(bkpt_idx as i32),
-                    }),
-                    Default::default(),
-                ),
-            );
-        }
-
-        let mut seq = builder.instr_seq(entry_block);
-        for (instr, _) in instrs {
-            seq.instr(instr);
         }
     }
 
-    Ok(module.emit_wasm())
+    // Build file-local line ranges that resolve to each inserted bkpt index.
+    let mut per_file_lines: BTreeMap<u32, Vec<(u32, u32)>> = BTreeMap::new(); // file -> [(line, bkpt)]
+    for (i, loc) in inserted_locations.iter().enumerate() {
+        let bkpt = (i + 1) as u32;
+        per_file_lines
+            .entry(loc.file)
+            .or_default()
+            .push((loc.line, bkpt));
+    }
+
+    let mut ranges = Vec::new();
+    for (file, mut entries) in per_file_lines {
+        entries.sort_by_key(|(line, _)| *line);
+        entries.dedup_by_key(|(line, _)| *line);
+        for i in 0..entries.len() {
+            let (start_line, bkpt) = entries[i];
+            let end_line = if i + 1 < entries.len() {
+                let next_start = entries[i + 1].0;
+                if next_start > start_line {
+                    next_start - 1
+                } else {
+                    start_line
+                }
+            } else {
+                start_line
+            };
+            ranges.push(BreakpointRange {
+                file,
+                start_line,
+                end_line,
+                bkpt,
+            });
+        }
+    }
+
+    web_sys::console::log_1(
+        &format!(
+            "instrumentation summary: candidates={}, inserted={}, unmatched_dwarf_addresses={}, skipped_out_of_bounds={}",
+            inserted_locations.len() + unmatched_addresses,
+            inserted_breakpoints.len(),
+            unmatched_addresses,
+            skipped_out_of_bounds
+        )
+        .into(),
+    );
+
+    Ok((module.emit_wasm(), inserted_locations, ranges))
 }

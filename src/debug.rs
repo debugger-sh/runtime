@@ -1,4 +1,4 @@
-use crate::types::{LocationInfo, WorkerOut};
+use crate::types::{BreakpointRange, LocationInfo, WorkerOut};
 use js_sys::SharedArrayBuffer;
 use std::cell::RefCell;
 
@@ -22,17 +22,21 @@ thread_local! {
 /// - Value 1 = breakpoint enabled
 pub struct Debugger {
     locations: Vec<LocationInfo>,
+    ranges: Vec<BreakpointRange>,
     files: Vec<String>,
     buffer: SharedArrayBuffer,
 }
 
 impl Debugger {
-    pub fn new(locations: Vec<LocationInfo>, files: Vec<String>) -> Self {
-        let buffer_size = (locations.len() + 1) as u32;
+    pub fn new(locations: Vec<LocationInfo>, ranges: Vec<BreakpointRange>, files: Vec<String>) -> Self {
+        let max_bkpt = ranges.iter().map(|r| r.bkpt).max().unwrap_or(0);
+        let slots = max_bkpt + 1; // slot 0 sentinel, 1..N breakpoints
+        let buffer_size = slots * 4; // Int32Array backing store
         let buffer = SharedArrayBuffer::new(buffer_size);
 
         Self {
             locations,
+            ranges,
             files,
             buffer,
         }
@@ -53,6 +57,7 @@ impl Debugger {
     pub fn send_debug_info(&self) {
         WorkerOut::Debug {
             locations: self.locations.clone(),
+            ranges: self.ranges.clone(),
             files: self.files.clone(),
             breakpoint_buffer: self.buffer.clone(),
         }
@@ -64,11 +69,12 @@ impl Debugger {
     /// This reads from the SharedArrayBuffer using atomic operations.
     /// Returns false for index 0 (sentinel) or out-of-bounds indices.
     pub fn bkpt_enabled(&self, index: u32) -> bool {
-        if index == 0 || index as usize > self.locations.len() {
+        let max_bkpt = self.ranges.iter().map(|r| r.bkpt).max().unwrap_or(0);
+        if index == 0 || index > max_bkpt {
             return false;
         }
 
-        let view = js_sys::Int8Array::new(&self.buffer);
+        let view = js_sys::Int32Array::new(&self.buffer);
         let value = js_sys::Atomics::load(&view, index).unwrap_or(0);
         value != 0
     }

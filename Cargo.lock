@@ -2048,6 +2048,7 @@ dependencies = [
  "wasmer",
  "wasmer-config",
  "wasmer-wasix",
+ "wasmparser 0.240.0",
  "web-sys",
 ]
 

@@ -135,9 +135,9 @@ async fn start(msg: WorkerStart) {
             .await
             .expect("Read main.wasm");
 
-        let (locations, files) = parse_dwarf_info(&wasm_bytes);
-        let instrumented_wasm =
-            instrument_binary(&wasm_bytes, &locations).expect("Instrumentation failed");
+        let (dwarf_locations, files) = parse_dwarf_info(&wasm_bytes);
+        let (instrumented_wasm, locations, ranges) =
+            instrument_binary(&wasm_bytes, &dwarf_locations).expect("Instrumentation failed");
 
         // Write the binary back to the fs
         {
@@ -154,7 +154,7 @@ async fn start(msg: WorkerStart) {
         }
 
         // so bkpt import can access it
-        let debugger = Debugger::new(locations, files);
+        let debugger = Debugger::new(locations, ranges, files);
         debugger.send_debug_info();
         Debugger::set_global(debugger);
     }
