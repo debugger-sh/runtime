@@ -135,9 +135,25 @@ async fn start(msg: WorkerStart) {
             .await
             .expect("Read main.wasm");
 
+        WorkerOut::Download {
+            data: wasm_bytes.clone(),
+            filename: "pre-instrumentation.wasm".into(),
+        }
+        .send();
+
         let (locations, files) = parse_dwarf_info(&wasm_bytes);
         let instrumented_wasm =
             instrument_binary(&wasm_bytes, &locations).expect("Instrumentation failed");
+
+        web_sys::console::log_1(
+            &format!(
+                "Instrumented binary: {} -> {} bytes ({} locations)",
+                wasm_bytes.len(),
+                instrumented_wasm.len(),
+                locations.len()
+            )
+            .into(),
+        );
 
         // Write the binary back to the fs
         {
