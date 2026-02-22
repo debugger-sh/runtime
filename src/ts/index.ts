@@ -469,8 +469,9 @@ export class Debugger {
     const data = event.data;
 
     if (data.type === 'debug') {
-      this._locations = data.locations.map((loc) => ({
-        file: data.files[loc.file],
+      const { locations, files } = data.info;
+      this._locations = locations.map((loc) => ({
+        file: files[loc.file],
         line: loc.line,
         col: loc.col,
         address: loc.address,

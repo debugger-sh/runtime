@@ -8,7 +8,7 @@ use crate::debug::Debugger;
 use crate::dwarf::{get_wasm_bytes, parse_dwarf_info};
 use crate::execution::Execution;
 use crate::instrument::instrument_wasm;
-use crate::types::*;
+use crate::types::{DebugInfo, FsNode, WorkerOut, WorkerStart};
 
 mod debug;
 pub mod dwarf;
@@ -143,16 +143,16 @@ async fn start(msg: WorkerStart) {
         }
         .send();
 
-        let (locations, files) = parse_dwarf_info(&wasm_bytes).expect("Parsed DWARF");
+        let debug_info = parse_dwarf_info(&wasm_bytes).expect("Parsed DWARF");
         let instrumented_wasm =
-            instrument_wasm(&wasm_bytes, &locations).expect("Instrumentation failed");
+            instrument_wasm(&wasm_bytes, &debug_info).expect("Instrumentation failed");
 
         web_sys::console::log_1(
             &format!(
                 "Instrumented binary: {} -> {} bytes ({} locations)",
                 wasm_bytes.len(),
                 instrumented_wasm.len(),
-                locations.len()
+                debug_info.locations.len()
             )
             .into(),
         );
@@ -172,7 +172,7 @@ async fn start(msg: WorkerStart) {
         }
 
         // so bkpt import can access it
-        let debugger = Debugger::new(locations, files);
+        let debugger = Debugger::new(debug_info);
         debugger.send_debug_info();
         Debugger::set_global(debugger);
     }

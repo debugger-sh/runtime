@@ -20,13 +20,16 @@ fn main() {
         process::exit(1);
     });
 
-    let (locations, files) = match parse_dwarf_info(&wasm_bytes) {
-        Ok(result) => result,
+    let debug_info = match parse_dwarf_info(&wasm_bytes) {
+        Ok(info) => info,
         Err(e) => {
             eprintln!("Failed to parse DWARF info: {}", e);
             process::exit(1);
         }
     };
+
+    let locations = &debug_info.locations;
+    let files = &debug_info.files;
 
     println!("=== DWARF locations ({}) ===", locations.len());
     for (i, loc) in locations.iter().enumerate() {
@@ -35,7 +38,7 @@ fn main() {
     }
     println!();
 
-    let instrumented = match instrument_wasm(&wasm_bytes, &locations) {
+    let instrumented = match instrument_wasm(&wasm_bytes, &debug_info) {
         Ok(bytes) => bytes,
         Err(e) => {
             eprintln!("Instrumentation failed: {}", e);

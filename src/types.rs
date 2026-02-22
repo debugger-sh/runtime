@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_repr::{Serialize_repr};
+use serde_repr::Serialize_repr;
 use std::collections::HashMap;
 use tsify::Tsify;
 use wasm_bindgen::JsValue;
@@ -43,8 +43,7 @@ pub enum WorkerOut<'a> {
     },
     #[serde(rename = "debug")]
     Debug {
-        locations: Vec<LocationInfo>,
-        files: Vec<String>,
+        info: DebugInfo,
         /// Bitfield where index N corresponds to breakpoint N.
         /// Index 0 is a sentinel (always 0). Length = breakpoints.len() + 1.
         #[serde(with = "serde_wasm_bindgen::preserve")]
@@ -68,16 +67,7 @@ pub enum WorkerOut<'a> {
     },
 
     #[serde(rename = "stop")]
-    Stop
-}
-
-#[derive(Debug, Clone, Tsify, Serialize)]
-pub struct LocationInfo {
-    pub file: u32,
-    pub line: u32,
-    pub col: u32,
-    /// Byte offset into the WASM code section for instrumentation
-    pub address: u64,
+    Stop,
 }
 
 impl<'a> WorkerOut<'a> {
@@ -90,5 +80,30 @@ impl<'a> WorkerOut<'a> {
                     .into(),
             )
             .expect("post_message succeeded");
+    }
+}
+
+#[derive(Debug, Clone, Tsify, Serialize)]
+pub struct LocationInfo {
+    pub file: u32,
+    pub line: u32,
+    pub col: u32,
+    /// Byte offset into the WASM code section for instrumentation
+    pub address: u64,
+}
+
+/// Debug information parsed from DWARF
+#[derive(Debug, Clone, Default, Tsify, Serialize)]
+pub struct DebugInfo {
+    /// Breakpoint locations (file index, line, col, WASM address).
+    pub locations: Vec<LocationInfo>,
+    /// Deduplicated source filenames; index matches `LocationInfo::file`.
+    pub files: Vec<String>,
+}
+
+impl DebugInfo {
+    /// Creates an empty debug info (no locations, no files).
+    pub fn new() -> Self {
+        Self::default()
     }
 }

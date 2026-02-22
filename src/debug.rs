@@ -1,4 +1,4 @@
-use crate::types::{LocationInfo, WorkerOut};
+use crate::types::{DebugInfo, LocationInfo, WorkerOut};
 use js_sys::SharedArrayBuffer;
 use std::cell::RefCell;
 
@@ -23,41 +23,23 @@ thread_local! {
 ///
 /// The instrumented WASM uses 1-based indices: `bkpt(N)` checks `flags[N-1]`.
 pub struct Debugger {
-    locations: Vec<LocationInfo>,
-    files: Vec<String>,
+    info: DebugInfo,
     buffer: SharedArrayBuffer,
 }
 
 const SENTINEL_BYTES: u32 = 4;
 
 impl Debugger {
-    pub fn new(locations: Vec<LocationInfo>, files: Vec<String>) -> Self {
-        let buffer_size = SENTINEL_BYTES + locations.len() as u32;
+    pub fn new(info: DebugInfo) -> Self {
+        let buffer_size = SENTINEL_BYTES + info.locations.len() as u32;
         let buffer = SharedArrayBuffer::new(buffer_size);
 
-        Self {
-            locations,
-            files,
-            buffer,
-        }
-    }
-
-    pub fn buffer(&self) -> &SharedArrayBuffer {
-        &self.buffer
-    }
-
-    pub fn locations(&self) -> &[LocationInfo] {
-        &self.locations
-    }
-
-    pub fn files(&self) -> &[String] {
-        &self.files
+        Self { info, buffer }
     }
 
     pub fn send_debug_info(&self) {
         WorkerOut::Debug {
-            locations: self.locations.clone(),
-            files: self.files.clone(),
+            info: self.info.clone(),
             breakpoint_buffer: self.buffer.clone(),
         }
         .send();
@@ -66,14 +48,14 @@ impl Debugger {
     /// Check if a breakpoint at the given index is enabled.
     /// Index is 1-based (from instrumented WASM). Returns false for 0 or out-of-bounds.
     pub fn bkpt_enabled(&self, index: u32) -> bool {
-        if index == 0 || index as usize > self.locations.len() {
+        if index == 0 || index as usize > self.info.locations.len() {
             return false;
         }
 
         let flags = js_sys::Uint8Array::new_with_byte_offset_and_length(
             &self.buffer,
             SENTINEL_BYTES,
-            self.locations.len() as u32,
+            self.info.locations.len() as u32,
         );
         flags.get_index(index - 1) != 0
     }

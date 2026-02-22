@@ -1,4 +1,4 @@
-use crate::types::LocationInfo;
+use crate::types::{DebugInfo, LocationInfo};
 use gimli::{EndianSlice, LittleEndian, Reader};
 use object::{Object, ObjectSection};
 use std::borrow::Cow;
@@ -32,14 +32,10 @@ pub async fn get_wasm_bytes(
 // DWARF Parsing
 // ============================================================================
 
-/// Parse DWARF debug info from WASM bytes to extract breakpoint locations.
-///
-/// Returns (locations, files) where:
-/// - locations: All possible breakpoint locations (file index, line, col)
-/// - files: Deduplicated list of source filenames
-pub fn parse_dwarf_info(wasm_bytes: &[u8]) -> Result<(Vec<LocationInfo>, Vec<String>), String> {
-    let object = object::File::parse(wasm_bytes)
-        .map_err(|e| format!("Failed to parse WASM: {:?}", e))?;
+/// Parse DWARF debug info from WASM bytes
+pub fn parse_dwarf_info(wasm_bytes: &[u8]) -> Result<DebugInfo, String> {
+    let object =
+        object::File::parse(wasm_bytes).map_err(|e| format!("Failed to parse WASM: {:?}", e))?;
 
     let load_section = |id: gimli::SectionId| -> Result<Cow<'_, [u8]>, gimli::Error> {
         Ok(object
@@ -75,8 +71,8 @@ pub fn parse_dwarf_info(wasm_bytes: &[u8]) -> Result<(Vec<LocationInfo>, Vec<Str
                 continue;
             };
 
-            let filename = build_filename(&dwarf, &unit, file_entry)
-                .map_err(|e| format!("{:?}", e))?;
+            let filename =
+                build_filename(&dwarf, &unit, file_entry).map_err(|e| format!("{:?}", e))?;
 
             let file_idx = if let Some(&idx) = file_map.get(&filename) {
                 idx
@@ -102,7 +98,7 @@ pub fn parse_dwarf_info(wasm_bytes: &[u8]) -> Result<(Vec<LocationInfo>, Vec<Str
         }
     }
 
-    Ok((locations, files))
+    Ok(DebugInfo { locations, files })
 }
 
 fn build_filename<R: Reader>(

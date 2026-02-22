@@ -1,4 +1,4 @@
-use crate::types::LocationInfo;
+use crate::types::{DebugInfo, LocationInfo};
 use std::collections::HashMap;
 use wasm_encoder::Instruction;
 
@@ -17,8 +17,9 @@ struct Instrumenter {
 }
 
 impl Instrumenter {
-    fn new(locations: &[LocationInfo]) -> Self {
-        let breakpoints: HashMap<u64, u32> = locations
+    fn new(info: &DebugInfo) -> Self {
+        let breakpoints: HashMap<u64, u32> = info
+            .locations
             .iter()
             .enumerate()
             .map(|(i, loc)| (loc.address, (i + 1) as u32))
@@ -126,7 +127,9 @@ impl wasm_encoder::reencode::Reencode for Instrumenter {
             .map_err(wasm_encoder::reencode::Error::from)?;
 
         let body_rel_start = func.range().start.saturating_sub(self.code_section_start) as u64;
-        let first_instr_rel = reader.original_position().saturating_sub(self.code_section_start) as u64;
+        let first_instr_rel = reader
+            .original_position()
+            .saturating_sub(self.code_section_start) as u64;
 
         // DWARF addresses that point into the function preamble (body_size + locals)
         // should fire at the first instruction.
@@ -167,8 +170,8 @@ impl wasm_encoder::reencode::Reencode for Instrumenter {
 ///
 /// Adds import: `(import "debug" "bkpt" (func (param i32)))`
 /// The i32 param is the breakpoint index (1-based, 0 is sentinel).
-pub fn instrument_wasm(wasm_bytes: &[u8], locations: &[LocationInfo]) -> Result<Vec<u8>, String> {
-    let mut reencoder = Instrumenter::new(locations);
+pub fn instrument_wasm(wasm_bytes: &[u8], debug_info: &DebugInfo) -> Result<Vec<u8>, String> {
+    let mut reencoder = Instrumenter::new(debug_info);
     let mut module = wasm_encoder::Module::new();
     wasm_encoder::reencode::utils::parse_core_module(
         &mut reencoder,
