@@ -241,11 +241,11 @@ class StdinStream {
 const Internals: unique symbol = Symbol();
 
 export type Location = {
-  /** The name of a function, e.g. `main`, which begins at this location. */
-  readonly function?: string;
   readonly file: string;
   readonly line: number;
   readonly col: number;
+  /** Offset into the compiled code section where this location will break */
+  readonly address: number;
 };
 
 export type BreakpointSpecifier = string | number;
@@ -352,7 +352,8 @@ export class Breakpoint {
         if (line !== undefined) {
           if (loc.line !== line) continue;
         } else if (fn !== undefined) {
-          if (loc.function !== fn) continue;
+          /** TODO: Breaking on function names not supported yet */
+          if (fn !== undefined) continue;
         } else continue;
 
         this._locations.push(i);
@@ -484,9 +485,8 @@ export class Debugger {
     }
 
     // Generated WorkerOut type will include this variant after Rust rebuild
-    const msg = data as unknown as { type: string; location_index: number };
-    if (msg.type === 'breakpoint_hit') {
-      const loc = this._locations[msg.location_index];
+    if (data.type === 'breakpoint') {
+      const loc = this._locations[data.location_index];
       if (!loc) return;
       this._pausedAt = loc;
       this.onPause?.(loc);

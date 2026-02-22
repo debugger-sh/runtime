@@ -60,8 +60,8 @@ pub enum WorkerOut<'a> {
     },
 
     /// Sent when execution pauses at an enabled breakpoint.
-    #[serde(rename = "breakpoint_hit")]
-    BreakpointHit {
+    #[serde(rename = "breakpoint")]
+    Breakpoint {
         /// 0-based index into the locations array
         location_index: u32,
     },

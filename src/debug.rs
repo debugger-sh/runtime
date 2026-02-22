@@ -75,7 +75,7 @@ impl Debugger {
             return false;
         }
 
-        WorkerOut::BreakpointHit {
+        WorkerOut::Breakpoint {
             location_index: index - 1,
         }
         .send();

@@ -131,7 +131,7 @@ impl wasm_encoder::reencode::Reencode for Instrumenter {
 
         // DWARF addresses that point into the function preamble (body_size + locals)
         // should fire at the first instruction.
-        for code_ofs in (body_rel_start..first_instr_rel) {
+        for code_ofs in body_rel_start..first_instr_rel {
             let Some(bkpt_idx) = self.breakpoints.get(&code_ofs).copied() else {
                 continue;
             };
