@@ -8,7 +8,7 @@ use crate::debug::Debugger;
 use crate::dwarf::{get_wasm_bytes, parse_dwarf_info};
 use crate::execution::Execution;
 use crate::instrument::instrument_wasm;
-use crate::types::{DebugInfo, FsNode, WorkerOut, WorkerStart};
+use crate::types::{FsNode, WorkerOut, WorkerStart};
 
 mod debug;
 pub mod dwarf;

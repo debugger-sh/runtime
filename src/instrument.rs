@@ -1,4 +1,4 @@
-use crate::types::{DebugInfo, LocationInfo};
+use crate::types::DebugInfo;
 use std::collections::HashMap;
 use wasm_encoder::Instruction;
 

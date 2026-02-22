@@ -1,4 +1,4 @@
-use crate::types::{DebugInfo, LocationInfo, WorkerOut};
+use crate::types::{DebugInfo, WorkerOut};
 use js_sys::SharedArrayBuffer;
 use std::cell::RefCell;
 
