@@ -1,4 +1,4 @@
-use crate::types::{DebugInfo, WorkerOut};
+use crate::types::{DebugInfo, InstrumenterInfo, WorkerOut};
 use js_sys::SharedArrayBuffer;
 use wasmer::{AsStoreMut, Function, FunctionEnv, FunctionEnvMut, Imports};
 
@@ -21,18 +21,23 @@ unsafe impl Send for Debugger {}
 ///
 /// The instrumented WASM uses 0-based indices: `bkpt(N)` checks `flags[N]`.
 pub struct Debugger {
-    info: DebugInfo,
+    debug_info: DebugInfo,
+    instr_info: InstrumenterInfo,
     buffer: SharedArrayBuffer,
 }
 
 const SENTINEL_BYTES: u32 = 4;
 
 impl Debugger {
-    pub fn new(info: DebugInfo) -> Self {
-        let buffer_size = SENTINEL_BYTES + info.locations.len() as u32;
+    pub fn new(debug_info: DebugInfo, instr_info: InstrumenterInfo) -> Self {
+        let buffer_size = SENTINEL_BYTES + debug_info.locations.len() as u32;
         let buffer = SharedArrayBuffer::new(buffer_size);
 
-        Self { info, buffer }
+        Self {
+            debug_info,
+            instr_info,
+            buffer,
+        }
     }
 
     /// Attaches the debugger to a given WASM instance.
@@ -56,7 +61,7 @@ impl Debugger {
 
     fn send_debug_info(&self) {
         WorkerOut::Debug {
-            info: self.info.clone(),
+            info: self.debug_info.clone(),
             breakpoint_buffer: self.buffer.clone(),
         }
         .send();
@@ -65,14 +70,14 @@ impl Debugger {
 
     /// Check if a breakpoint at the given index is enabled
     pub fn bkpt_enabled(&self, index: u32) -> bool {
-        if index as usize > self.info.locations.len() {
+        if index as usize > self.debug_info.locations.len() {
             return false;
         }
 
         let flags = js_sys::Uint8Array::new_with_byte_offset_and_length(
             &self.buffer,
             SENTINEL_BYTES,
-            self.info.locations.len() as u32,
+            self.debug_info.locations.len() as u32,
         );
         flags.get_index(index) != 0
     }

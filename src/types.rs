@@ -107,3 +107,13 @@ impl DebugInfo {
         Self::default()
     }
 }
+
+/// Additional context needed to instantiate and run a binary that has been instrumented.
+///
+/// This information is recovered while parsing the source binary during the instrumentation pass,
+/// rather than the debug info pass, to avoid necessitating an additional `wasmparser` pass during
+/// [`crate::dwarf::parse_debug_info`]
+pub struct InstrumenterInfo {
+    /// Initial size, in WASM pages, of the memory that should be supplied to the instrumented binary
+    pub initial_memory_pages: u32,
+}

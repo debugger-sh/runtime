@@ -129,7 +129,7 @@ impl<'a> Step<'a> {
         };
 
         /* In debug mode, we need to instrument the binary */
-        let mut debug_info = None;
+        let mut debugger = None;
 
         let binary_bytes = if binary_loc.starts_with("/") {
             let mut wasm = self
@@ -145,9 +145,11 @@ impl<'a> Step<'a> {
                 }
                 .send();
 
-                let info = parse_debug_info(&wasm).ensure("Parsed debug info")?;
-                wasm = instrument_wasm(&wasm, &info).ensure("Instrumented WASM")?;
-                debug_info = Some(info);
+                let debug_info = parse_debug_info(&wasm).ensure("Parsed debug info")?;
+                let (instr_wasm, instr_info) =
+                    instrument_wasm(&wasm, &debug_info).ensure("Instrumented WASM")?;
+                wasm = instr_wasm;
+                debugger = Some(Debugger::new(debug_info, instr_info));
 
                 WorkerOut::Download {
                     data: wasm.clone(),
@@ -198,9 +200,7 @@ impl<'a> Step<'a> {
             .ensure("Preopened root directory")?;
 
         /* Instantiate and run the binary */
-        let instance = if let Some(debug_info) = debug_info {
-            let debugger = Debugger::new(debug_info);
-
+        let instance = if let Some(debugger) = debugger {
             let wasi_env = builder.build().ensure("Built WASI environment")?;
             let mut wasi_func_env = WasiFunctionEnv::new(&mut store, wasi_env);
 

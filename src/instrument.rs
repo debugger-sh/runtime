@@ -1,4 +1,4 @@
-use crate::types::DebugInfo;
+use crate::types::{DebugInfo, InstrumenterInfo};
 use std::collections::HashMap;
 use wasm_encoder::Instruction;
 
@@ -165,7 +165,10 @@ impl wasm_encoder::reencode::Reencode for Instrumenter {
 ///
 /// Adds import: `(import "debug" "bkpt" (func (param i32)))`
 /// The i32 param is the breakpoint index (1-based, 0 is sentinel).
-pub fn instrument_wasm(wasm_bytes: &[u8], debug_info: &DebugInfo) -> Result<Vec<u8>, String> {
+pub fn instrument_wasm(
+    wasm_bytes: &[u8],
+    debug_info: &DebugInfo,
+) -> Result<(Vec<u8>, InstrumenterInfo), String> {
     let mut reencoder = Instrumenter::new(debug_info);
     let mut module = wasm_encoder::Module::new();
     wasm_encoder::reencode::utils::parse_core_module(
@@ -175,5 +178,10 @@ pub fn instrument_wasm(wasm_bytes: &[u8], debug_info: &DebugInfo) -> Result<Vec<
         wasm_bytes,
     )
     .map_err(|e| format!("Failed to reencode WASM: {:?}", e))?;
-    Ok(module.finish())
+    Ok((
+        module.finish(),
+        InstrumenterInfo {
+            initial_memory_pages: 0,
+        },
+    ))
 }
