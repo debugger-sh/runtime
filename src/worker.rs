@@ -69,7 +69,7 @@ async fn start(msg: WorkerStart) {
         .await
         .expect("created user files filesystem");
 
-    let mut exec = Execution::new(msg.stdin_buffer);
+    let exec = Execution::new(msg.stdin_buffer);
 
     // Build clang args, conditional on is_debug
     let mut clang_args = vec![
@@ -131,7 +131,8 @@ async fn start(msg: WorkerStart) {
         .await
         .expect("Linking succeeded");
 
-    // Debug mode: parse DWARF, instrument binary, set up debugger
+    // Debug mode: parse DWARF, instrument binary, create debugger
+    let mut main_step = exec.step("main").binary("/main.wasm");
     if msg.is_debug {
         let wasm_bytes = get_wasm_bytes(&exec.fs, "/main.wasm")
             .await
@@ -157,7 +158,6 @@ async fn start(msg: WorkerStart) {
             .into(),
         );
 
-        // Write the binary back to the fs
         {
             let mut file = exec
                 .fs
@@ -171,10 +171,9 @@ async fn start(msg: WorkerStart) {
                 .expect("Write instrumented binary");
         }
 
-        // so bkpt import can access it
         let debugger = Debugger::new(debug_info);
         debugger.send_debug_info();
-        Debugger::set_global(debugger);
+        main_step = main_step.debug(debugger);
     }
 
     let wasm_bytes = get_wasm_bytes(&exec.fs, "/main.wasm");
@@ -185,11 +184,6 @@ async fn start(msg: WorkerStart) {
     }
     .send();
 
-    // Run the main binary (with debug imports if in debug mode)
-    let mut main_step = exec.step("main").binary("/main.wasm");
-    if msg.is_debug {
-        main_step = main_step.debug();
-    }
     main_step.run().await.expect("Running succeeded");
 
     // Print out the filesystem toplevel for debugging

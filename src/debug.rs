@@ -1,11 +1,8 @@
 use crate::types::{DebugInfo, WorkerOut};
 use js_sys::SharedArrayBuffer;
-use std::cell::RefCell;
 
-// Thread-local storage for the global debugger instance
-thread_local! {
-    static DEBUGGER: RefCell<Option<Debugger>> = RefCell::new(None);
-}
+/// SAFETY: In wasm32 there is no shared-memory threading; all execution is single-threaded.
+unsafe impl Send for Debugger {}
 
 /// Debugger state that manages breakpoint locations and their enable/disable state.
 ///
@@ -83,21 +80,5 @@ impl Debugger {
 
         self.wait_for_resume();
         true
-    }
-
-    /// Set the global debugger instance.
-    /// Call this before running instrumented code.
-    pub fn set_global(debugger: Debugger) {
-        DEBUGGER.with(|d| *d.borrow_mut() = Some(debugger));
-    }
-
-    /// Handle a breakpoint hit from WASM import.
-    /// This is the function provided as the "debug"."bkpt" import.
-    pub fn handle_bkpt(index: i32) {
-        DEBUGGER.with(|d| {
-            if let Some(debugger) = d.borrow().as_ref() {
-                debugger.bkpt(index as u32);
-            }
-        });
     }
 }
