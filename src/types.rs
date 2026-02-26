@@ -100,13 +100,25 @@ pub struct DebugInfo {
     pub locations: Vec<LocationInfo>,
     /// Deduplicated source filenames; index matches `LocationInfo::file`.
     pub files: Vec<String>,
+
+    pub functions: Vec<DebugFunction>,
+    // TODO
+    // pub types: Vec<DebugType>,
 }
 
-impl DebugInfo {
-    /// Creates an empty debug info (no locations, no files).
-    pub fn new() -> Self {
-        Self::default()
-    }
+#[derive(Debug, Clone, Tsify, Serialize)]
+pub struct DebugFunction {
+    pub name: String,
+    pub variables: Vec<DebugVariable>,
+    pub frame_size: u32,
+}
+
+#[derive(Debug, Clone, Tsify, Serialize)]
+pub struct DebugVariable {
+    /// Index into types array
+    pub ty: u32,
+    pub name: String,
+    pub offset: u32,
 }
 
 /// Additional context needed to instantiate and run a binary that has been instrumented.

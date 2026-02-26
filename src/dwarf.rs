@@ -21,8 +21,7 @@ pub fn parse_debug_info(wasm_bytes: &[u8]) -> Result<DebugInfo, String> {
     let dwarf =
         dwarf_sections.borrow(|section| EndianSlice::new(Cow::as_ref(section), LittleEndian));
 
-    let mut locations = Vec::new();
-    let mut files: Vec<String> = Vec::new();
+    let mut info = DebugInfo::default();
     let mut file_map: HashMap<String, u32> = HashMap::new();
 
     let mut units = dwarf.units();
@@ -49,8 +48,8 @@ pub fn parse_debug_info(wasm_bytes: &[u8]) -> Result<DebugInfo, String> {
             let file_idx = if let Some(&idx) = file_map.get(&filename) {
                 idx
             } else {
-                let idx = files.len() as u32;
-                files.push(filename.clone());
+                let idx = info.files.len() as u32;
+                info.files.push(filename.clone());
                 file_map.insert(filename, idx);
                 idx
             };
@@ -61,7 +60,7 @@ pub fn parse_debug_info(wasm_bytes: &[u8]) -> Result<DebugInfo, String> {
                 gimli::ColumnType::Column(c) => c.get() as u32,
             };
 
-            locations.push(LocationInfo {
+            info.locations.push(LocationInfo {
                 file: file_idx,
                 line,
                 col,
@@ -70,7 +69,7 @@ pub fn parse_debug_info(wasm_bytes: &[u8]) -> Result<DebugInfo, String> {
         }
     }
 
-    Ok(DebugInfo { locations, files })
+    Ok(info)
 }
 
 fn build_filename<R: Reader>(
