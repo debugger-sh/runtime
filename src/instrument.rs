@@ -61,15 +61,15 @@ fn count_function_imports(imports: &wasmparser::Imports<'_>) -> u32 {
 impl wasm_encoder::reencode::Reencode for Instrumenter {
     type Error = core::convert::Infallible;
 
-    fn parse_memory_section(
-        &mut self,
-        _memories: &mut wasm_encoder::MemorySection,
-        _section: wasmparser::MemorySectionReader<'_>,
-    ) -> Result<(), wasm_encoder::reencode::Error<Self::Error>> {
-        // Note: The instrumented code has no defined memories,
-        // as we will be passing the program memory in via import to share it
-        Ok(())
-    }
+    // fn parse_memory_section(
+    //     &mut self,
+    //     _memories: &mut wasm_encoder::MemorySection,
+    //     _section: wasmparser::MemorySectionReader<'_>,
+    // ) -> Result<(), wasm_encoder::reencode::Error<Self::Error>> {
+    //     // Note: The instrumented code has no defined memories,
+    //     // as we will be passing the program memory in via import to share it
+    //     Ok(())
+    // }
 
     fn function_index(
         &mut self,

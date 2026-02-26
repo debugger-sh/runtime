@@ -1617,16 +1617,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "object"
-version = "0.38.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "271638cd5fa9cca89c4c304675ca658efc4e64a66c716b7cfe1afb4b9611dbbc"
-dependencies = [
- "memchr",
- "wasmparser 0.243.0",
-]
-
-[[package]]
 name = "once_cell"
 version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1992,6 +1982,7 @@ dependencies = [
 name = "runtime"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "console_error_panic_hook",
  "flate2",
@@ -1999,7 +1990,6 @@ dependencies = [
  "gimli 0.33.0",
  "instant",
  "js-sys",
- "object 0.38.1",
  "serde",
  "serde-wasm-bindgen",
  "serde_bytes",
@@ -3385,15 +3375,6 @@ checksum = "161296c618fa2d63f6ed5fffd1112937e803cb9ec71b32b01a76321555660917"
 dependencies = [
  "bitflags 2.10.0",
  "indexmap",
-]
-
-[[package]]
-name = "wasmparser"
-version = "0.243.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6d8db401b0528ec316dfbe579e6ab4152d61739cfe076706d2009127970159d"
-dependencies = [
- "bitflags 2.10.0",
 ]
 
 [[package]]

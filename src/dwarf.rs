@@ -1,39 +1,53 @@
 use crate::types::{DebugInfo, LocationInfo};
 use gimli::{EndianSlice, LittleEndian, Reader};
-use object::{Object, ObjectSection};
 use std::borrow::Cow;
 use std::collections::HashMap;
+use wasmparser::{Parser, Payload};
 
 /// Parse DWARF debug info from WASM bytes
-pub fn parse_debug_info(wasm_bytes: &[u8]) -> Result<DebugInfo, String> {
-    let object =
-        object::File::parse(wasm_bytes).map_err(|e| format!("Failed to parse WASM: {:?}", e))?;
+pub fn parse_debug_info(wasm_bytes: &[u8]) -> anyhow::Result<DebugInfo> {
+    let mut info = DebugInfo::default();
+    let mut sections: HashMap<&str, &[u8]> = HashMap::new();
+
+    for payload in Parser::new(0).parse_all(wasm_bytes) {
+        let payload = payload?;
+        match payload {
+            Payload::CustomSection(reader) => {
+                sections.insert(reader.name(), reader.data());
+            }
+            Payload::MemorySection(reader) => {
+                for mem in reader {
+                    info.memory.initial_pages = mem?.initial;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
 
     let load_section = |id: gimli::SectionId| -> Result<Cow<'_, [u8]>, gimli::Error> {
-        Ok(object
-            .section_by_name(id.name())
-            .and_then(|s| s.uncompressed_data().ok())
+        Ok(sections
+            .get(id.name())
+            .map(|data| Cow::Borrowed(*data))
             .unwrap_or(Cow::Borrowed(&[])))
     };
 
-    let dwarf_sections = gimli::DwarfSections::load(load_section)
-        .map_err(|e| format!("Failed to load DWARF sections: {:?}", e))?;
+    let dwarf_sections = gimli::DwarfSections::load(load_section)?;
     let dwarf =
         dwarf_sections.borrow(|section| EndianSlice::new(Cow::as_ref(section), LittleEndian));
 
-    let mut info = DebugInfo::default();
     let mut file_map: HashMap<String, u32> = HashMap::new();
 
     let mut units = dwarf.units();
-    while let Some(header) = units.next().map_err(|e| format!("{:?}", e))? {
-        let unit = dwarf.unit(header).map_err(|e| format!("{:?}", e))?;
+    while let Some(header) = units.next()? {
+        let unit = dwarf.unit(header)?;
 
         let Some(program) = unit.line_program.clone() else {
             continue;
         };
 
         let mut rows = program.rows();
-        while let Some((header, row)) = rows.next_row().map_err(|e| format!("{:?}", e))? {
+        while let Some((header, row)) = rows.next_row()? {
             if !row.is_stmt() {
                 continue;
             }
@@ -42,8 +56,7 @@ pub fn parse_debug_info(wasm_bytes: &[u8]) -> Result<DebugInfo, String> {
                 continue;
             };
 
-            let filename =
-                build_filename(&dwarf, &unit, file_entry).map_err(|e| format!("{:?}", e))?;
+            let filename = build_filename(&dwarf, &unit, file_entry)?;
 
             let file_idx = if let Some(&idx) = file_map.get(&filename) {
                 idx
