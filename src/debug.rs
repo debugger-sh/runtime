@@ -1,7 +1,9 @@
 use crate::types::{DebugInfo, WorkerOut};
 use js_sys::{Object, Reflect, SharedArrayBuffer, WebAssembly};
 use wasm_bindgen::prelude::*;
-use wasmer::{AsStoreMut, Function, FunctionEnv, FunctionEnvMut, Imports, Memory, js::AsJs};
+use wasmer::{
+    AsStoreMut, Function, FunctionEnv, FunctionEnvMut, Global, Imports, Memory, js::AsJs,
+};
 
 /// SAFETY: In wasm32 there is no shared-memory threading; all execution is single-threaded.
 unsafe impl Send for Debugger {}
@@ -28,6 +30,9 @@ pub struct Debugger {
     main_memory: js_sys::WebAssembly::Memory,
     /// The memory which holds the debug stack during execution
     debug_memory: js_sys::WebAssembly::Memory,
+    /// The location of the debug stack pointer.
+    /// Points to the start of the current function's stack frame.
+    stack_pointer: js_sys::WebAssembly::Global,
 }
 
 const SENTINEL_BYTES: u32 = 4;
@@ -48,6 +53,17 @@ fn create_memory(memory: wasmer::MemoryType) -> Result<WebAssembly::Memory, JsVa
     Ok(memory)
 }
 
+fn create_stack_pointer(info: &DebugInfo) -> Result<WebAssembly::Global, JsValue> {
+    let global_desc = Object::new();
+
+    Reflect::set(&global_desc, &"value".into(), &"i32".into())?;
+    Reflect::set(&global_desc, &"mutable".into(), &true.into())?;
+    let global =
+        WebAssembly::Global::new(&global_desc, &info.memory.debug.minimum.bytes().0.into())?;
+
+    Ok(global)
+}
+
 impl Debugger {
     pub fn new(info: DebugInfo) -> Self {
         let buffer_size = SENTINEL_BYTES + info.locations.len() as u32;
@@ -56,6 +72,7 @@ impl Debugger {
         Self {
             main_memory: create_memory(info.memory.main).expect("Created program memory"),
             debug_memory: create_memory(info.memory.debug).expect("Created debug memory"),
+            stack_pointer: create_stack_pointer(&info).expect("Created stack pointer"),
             info,
             buffer,
         }
@@ -76,6 +93,17 @@ impl Debugger {
             "debug",
             "stack",
             Memory::from_jsvalue(store, &self.info.memory.debug, &self.debug_memory).unwrap(),
+        );
+
+        imports.define(
+            "debug",
+            "sp",
+            Global::from_jsvalue(
+                store,
+                &wasmer::GlobalType::new(wasmer::Type::I32, wasmer::Mutability::Var),
+                &self.stack_pointer,
+            )
+            .unwrap(),
         );
 
         let env = FunctionEnv::new(store, self);

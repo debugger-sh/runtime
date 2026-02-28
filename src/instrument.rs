@@ -144,6 +144,16 @@ impl<'a> wasm_encoder::reencode::Reencode for Instrumenter<'a> {
         add_mem_import(imports, "memory", &self.info.memory.main);
         add_mem_import(imports, "stack", &self.info.memory.debug);
 
+        imports.import(
+            "debug",
+            "sp",
+            wasm_encoder::EntityType::Global(wasm_encoder::GlobalType {
+                val_type: wasm_encoder::ValType::I32,
+                mutable: true,
+                shared: false,
+            }),
+        );
+
         Ok(())
     }
 
