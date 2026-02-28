@@ -183,7 +183,3 @@ pub struct DebugVariable {
     #[serde(skip)]
     pub location: Vec<VarLocationRange>,
 }
-
-// TODO(fabio)
-#[derive(Debug, Clone, Tsify, Serialize)]
-pub struct DebugType {}
