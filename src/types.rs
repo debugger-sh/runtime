@@ -184,6 +184,22 @@ pub struct DebugVariable {
     pub location: Vec<VarLocationRange>,
 }
 
-// TODO(fabio)
+#[derive(Debug, Clone, Copy, Tsify, Serialize)]
+pub enum TypeEncoding {
+    Signed,
+    Unsigned,
+    Float,
+    Bool,
+    Address,
+    Unknown,
+}
+
 #[derive(Debug, Clone, Tsify, Serialize)]
-pub struct DebugType {}
+pub struct DebugType {
+    pub name: String,
+    pub byte_size: u32,
+    // useful for showing the type in the debugger
+    pub encoding: TypeEncoding,
+    pub offset: u32,
+    pub fields: Vec<DebugType>,
+}
