@@ -234,7 +234,7 @@ impl<'a, 'b> FnInstrumenter<'a, 'b> {
     fn emit_header(&mut self, f: &mut wasm_encoder::Function) {
         f.instructions()
             .global_get(self.instr.sp_gl_index)
-            .i32_const((self.debug_func.frame_size + 4) as i32)
+            .i32_const((self.debug_func.frame.size) as i32)
             .i32_sub()
             .global_set(self.instr.sp_gl_index)
             .global_get(self.instr.sp_gl_index)
@@ -257,7 +257,7 @@ impl<'a, 'b> FnInstrumenter<'a, 'b> {
     fn emit_footer(&mut self, f: &mut wasm_encoder::Function) {
         f.instructions()
             .global_get(self.instr.sp_gl_index)
-            .i32_const((self.debug_func.frame_size + 4) as i32)
+            .i32_const((self.debug_func.frame.size) as i32)
             .i32_add()
             .global_set(self.instr.sp_gl_index);
     }

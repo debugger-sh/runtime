@@ -126,27 +126,35 @@ impl Default for MemoryInfo {
 }
 
 /// A single DWARF expression operation, converted from `gimli::Operation`
-/// during DWARF parsing. The instrumenter translates these to WASM instructions
-/// without depending on gimli.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Tsify, Serialize)]
 pub enum DwarfOp {
+    /// Push a value stored in a WASM location.
+    Wasm(WasmOp),
+
     /// `DW_OP_fbreg +offset`: push frame_base + offset.
     /// The instrumenter inlines the function's `frame_base` ops, then adds the offset.
     FrameOffset { offset: i64 },
-
-    /// `DW_OP_WASM_location 0x00`: push value of a WASM local.
-    WasmLocal { index: u32 },
 
     /// `DW_OP_stack_value`: marks the expression result as a value, not an address.
     /// Without this, the instrumenter dereferences the result via `i32.load`.
     StackValue,
 }
 
+#[derive(Debug, Clone, Tsify, Serialize)]
+pub enum WasmOp {
+    /// The index of a local in the currently executing function.
+    Local(u32),
+    /// The index of a global.
+    Global(u32),
+    /// The index of an item on the operand stack. 0 is the bottom of the operand stack.
+    Stack(u32),
+}
+
 /// A location expression valid over a specific PC range.
 /// At `-O0` a variable typically has one range spanning the whole function.
 /// At higher optimization levels, DWARF location lists produce multiple ranges
 /// as the variable moves between locals, memory, or gets optimized out.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Tsify, Serialize)]
 pub struct VarLocationRange {
     /// Code-section-relative start PC (inclusive).
     pub start: usize,
@@ -162,13 +170,40 @@ pub struct DebugFunction {
     /// Code section offset of the start of the function
     pub address: usize,
     pub variables: Vec<DebugVariable>,
-    /// Size of this function's debug stack frame (bytes).
-    pub frame_size: u32,
-
-    /// DWARF expression for the function's frame base (`DW_AT_frame_base`).
-    /// Typically `[WasmLocal { index }, StackValue]`.
     #[serde(skip)]
-    pub frame_base: Vec<DwarfOp>,
+    pub frame: DebugFrame,
+}
+
+#[derive(Debug, Clone)]
+pub struct DebugFrame {
+    /// The total size in bytes of the stack frame, including it's 32-bit tag
+    pub size: u32,
+    /// DWARF expression for the function's frame base (`DW_AT_frame_base`)
+    pub base: Vec<VarLocationRange>,
+    /// The entries in this stack frame
+    pub layout: Vec<DebugFrameEntry>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DebugFrameEntry {
+    /// The byte offset of this entry in its containing stack frame
+    offset: u32,
+    /// The WebAssembly type of the value stored by the entry
+    ty: wasmer::Type,
+    /// The WebAssembly location (local, global, or stack) represented by this entry's value
+    location: WasmOp,
+    /// A list of breakpoint indices for which this entry is considered valid.
+    ///
+    /// If a breakpoint index `N` is contained in this list, then accessing this entry's
+    /// value immediately after hitting breakpoint `N` will yield a valid value.
+    ///
+    /// More than one [DebugFrameEntry] in a frame may share the same [DebugFrameEntry::location],
+    /// but they are guaranteed to never have overlapping values in [DebugFrameEntry::lifetime].
+    /// This permits two frame entries with the same location to contain different types
+    /// at different points during the function's execution – for example, `WasmOp::Stack(0)`
+    /// might have type [wasmer::Type::I32] at the beginning of a function, but change to
+    /// [wasmer::Type::F64] later on in the function.
+    lifetime: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Tsify, Serialize)]
@@ -176,9 +211,6 @@ pub struct DebugVariable {
     /// Index into [DebugInfo::types]
     pub ty: u32,
     pub name: String,
-    /// Offset of this variable in its containing function's debug stack frame.
-    pub frame_offset: u32,
-
     /// Where and when the variable's value can be read.
     /// Empty if the variable is always optimized out.
     #[serde(skip)]

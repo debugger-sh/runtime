@@ -1,6 +1,6 @@
 use crate::types::{
-    DebugFunction, DebugInfo, DebugType, DebugVariable, DwarfOp, LocationInfo, TypeEncoding,
-    VarLocationRange,
+    DebugFrame, DebugFunction, DebugInfo, DebugType, DebugVariable, DwarfOp, LocationInfo,
+    TypeEncoding, VarLocationRange, WasmOp,
 };
 use gimli::{EndianSlice, LittleEndian, Reader};
 use std::borrow::Cow;
@@ -262,14 +262,21 @@ fn collect_subprograms_from_node<R: Reader>(
                 )?;
             }
 
-            let frame_size = compute_frame_layout(&mut variables, &info.types);
+            let frame = DebugFrame {
+                size: 4, // Allocate space for function tag
+                base: vec![VarLocationRange {
+                    start: low_pc as usize,
+                    end: high_pc as usize,
+                    ops: frame_base,
+                }],
+                layout: vec![],
+            };
 
             info.functions.push(DebugFunction {
                 name,
                 address: low_pc as usize,
                 variables,
-                frame_size,
-                frame_base,
+                frame,
             });
         }
         return Ok(());
@@ -322,12 +329,7 @@ fn collect_variables<R: Reader>(
 
             if let Some(name) = name {
                 if !location.is_empty() {
-                    variables.push(DebugVariable {
-                        name,
-                        ty,
-                        frame_offset: 0,
-                        location,
-                    });
+                    variables.push(DebugVariable { name, ty, location });
                 }
             }
         }
@@ -493,7 +495,7 @@ fn convert_expression<R: Reader>(
                     ops.push(DwarfOp::FrameOffset { offset });
                 }
                 gimli::Operation::WasmLocal { index } => {
-                    ops.push(DwarfOp::WasmLocal { index });
+                    ops.push(DwarfOp::Wasm(WasmOp::Local(index)));
                 }
                 gimli::Operation::StackValue => {
                     ops.push(DwarfOp::StackValue);
@@ -505,25 +507,6 @@ fn convert_expression<R: Reader>(
         }
     }
     ops
-}
-
-// ============================================================================
-// Debug stack frame layout
-// ============================================================================
-
-/// Assign `frame_offset` to each variable and return total frame size.
-/// Each slot is at least 4 bytes (i32 width) to match the `i32.store` used by
-/// the instrumenter. Larger types get their full byte_size so the layout is
-/// correct for future multi-word copies.
-fn compute_frame_layout(variables: &mut [DebugVariable], types: &[DebugType]) -> u32 {
-    let mut offset = 0u32;
-    for var in variables.iter_mut() {
-        let byte_size = types.get(var.ty as usize).map_or(4, |t| t.byte_size.max(4));
-        offset = (offset + 3) & !3;
-        var.frame_offset = offset;
-        offset += byte_size;
-    }
-    (offset + 3) & !3
 }
 
 // ============================================================================
