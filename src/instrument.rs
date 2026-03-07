@@ -259,7 +259,7 @@ struct FnInstrumenter<'a, 'b, 'c> {
     /// representing `i32.const` instructions which should eventually contain
     /// `i32.const F`, where `F` is the eventual size of this function's stack frame.
     /// Before emitting the instrumented function body, such instructions will be
-    /// replaced with the correct stack size.
+    /// replaced with the correct frame size.
     stack_intructions: Vec<usize>,
 
     /// A vector of the types of scratch locals which will be used to store
@@ -333,6 +333,7 @@ impl<'a, 'b, 'c> FnInstrumenter<'a, 'b, 'c> {
         // All instrumentation code must have no observable side effects.
         // In particular, all values of locals must be preserved and the
         // state of the operand stack must be preserved.
+        let bkpt = &self.instr.info.locations[bkpt_idx];
 
         self.instructions
             .push(Instruction::I32Const(bkpt_idx as i32));

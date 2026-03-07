@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_repr::Serialize_repr;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tsify::Tsify;
 use wasm_bindgen::JsValue;
 use web_sys::DedicatedWorkerGlobalScope;
@@ -66,7 +66,7 @@ pub enum WorkerOut<'a> {
     /// Sent when execution pauses at an enabled breakpoint.
     #[serde(rename = "breakpoint")]
     Breakpoint {
-        /// 0-based index into the locations array
+        /// 0-based index into [DebugInfo::locations] array
         location_index: usize,
     },
 
@@ -126,7 +126,7 @@ impl Default for MemoryInfo {
 }
 
 /// A single DWARF expression operation, converted from `gimli::Operation`
-#[derive(Debug, Clone, Tsify, Serialize)]
+#[derive(Debug, Clone)]
 pub enum DwarfOp {
     /// Push a value stored in a WASM location.
     Wasm(WasmOp),
@@ -140,7 +140,7 @@ pub enum DwarfOp {
     StackValue,
 }
 
-#[derive(Debug, Clone, Tsify, Serialize)]
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub enum WasmOp {
     /// The index of a local in the currently executing function.
     Local(usize),
@@ -150,11 +150,26 @@ pub enum WasmOp {
     Stack(usize),
 }
 
+#[derive(Default, Debug, Clone)]
+pub struct VarLocation(pub Vec<VarLocationRange>);
+
+impl VarLocation {
+    pub fn is_optimized_out(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn location_at(&self, addr: usize) -> Option<&VarLocationRange> {
+        self.0
+            .iter()
+            .find(|range| addr >= range.start && addr < range.end)
+    }
+}
+
 /// A location expression valid over a specific PC range.
 /// At `-O0` a variable typically has one range spanning the whole function.
 /// At higher optimization levels, DWARF location lists produce multiple ranges
 /// as the variable moves between locals, memory, or gets optimized out.
-#[derive(Debug, Clone, Tsify, Serialize)]
+#[derive(Debug, Clone)]
 pub struct VarLocationRange {
     /// Code-section-relative start PC (inclusive).
     pub start: usize,
@@ -174,12 +189,42 @@ pub struct DebugFunction {
     pub frame: DebugFrame,
 }
 
+impl DebugFunction {
+    /// Returns the WebAssembly locations needed to evaluate this function's variables at `addr`
+    pub fn wasm_locations_at(&self, addr: usize) -> HashSet<WasmOp> {
+        let mut out = HashSet::new();
+        let fb = self.frame.base.location_at(addr);
+        for var in &self.variables {
+            if let Some(range) = var.location.location_at(addr) {
+                collect_wasm_ops(&range.ops, fb, &mut out);
+            }
+        }
+        out
+    }
+}
+
+fn collect_wasm_ops(ops: &[DwarfOp], fb: Option<&VarLocationRange>, out: &mut HashSet<WasmOp>) {
+    for op in ops {
+        match op {
+            DwarfOp::Wasm(w) => {
+                out.insert(w.clone());
+            }
+            DwarfOp::FrameOffset { .. } => {
+                if let Some(frame_base) = fb {
+                    collect_wasm_ops(&frame_base.ops, fb, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DebugFrame {
     /// The total size in bytes of the stack frame, including it's 32-bit tag
     pub size: usize,
     /// DWARF expression for the function's frame base (`DW_AT_frame_base`)
-    pub base: Vec<VarLocationRange>,
+    pub base: VarLocation,
     /// The entries in this stack frame
     pub layout: Vec<DebugFrameEntry>,
 }
@@ -215,7 +260,7 @@ pub struct DebugVariable {
     /// Where and when the variable's value can be read.
     /// Empty if the variable is always optimized out.
     #[serde(skip)]
-    pub location: Vec<VarLocationRange>,
+    pub location: VarLocation,
 }
 
 #[derive(Debug, Clone, Copy, Tsify, Serialize)]

@@ -1,6 +1,6 @@
 use crate::types::{
     DebugFrame, DebugFunction, DebugInfo, DebugType, DebugVariable, DwarfOp, LocationInfo,
-    TypeEncoding, VarLocationRange, WasmOp,
+    TypeEncoding, VarLocation, VarLocationRange, WasmOp,
 };
 use gimli::{EndianSlice, LittleEndian, Reader};
 use std::borrow::Cow;
@@ -264,11 +264,11 @@ fn collect_subprograms_from_node<R: Reader>(
 
             let frame = DebugFrame {
                 size: 4, // Allocate space for function tag
-                base: vec![VarLocationRange {
+                base: VarLocation(vec![VarLocationRange {
                     start: low_pc as usize,
                     end: high_pc as usize,
                     ops: frame_base,
-                }],
+                }]),
                 layout: vec![],
             };
 
@@ -328,7 +328,7 @@ fn collect_variables<R: Reader>(
                 .unwrap_or(0_usize);
 
             if let Some(name) = name {
-                if !location.is_empty() {
+                if !location.is_optimized_out() {
                     variables.push(DebugVariable { name, ty, location });
                 }
             }
@@ -438,22 +438,22 @@ fn parse_var_location<R: Reader>(
     entry: &gimli::DebuggingInformationEntry<R>,
     default_start: usize,
     default_end: usize,
-) -> Result<Vec<VarLocationRange>, gimli::Error> {
+) -> Result<VarLocation, gimli::Error> {
     let Some(attr) = entry.attr(gimli::DW_AT_location) else {
-        return Ok(vec![]);
+        return Ok(VarLocation::default());
     };
 
     match attr.value() {
         gimli::AttributeValue::Exprloc(expr) => {
             let ops = convert_expression(expr, unit.encoding());
             if ops.is_empty() {
-                return Ok(vec![]);
+                return Ok(VarLocation::default());
             }
-            Ok(vec![VarLocationRange {
+            Ok(VarLocation(vec![VarLocationRange {
                 start: default_start,
                 end: default_end,
                 ops,
-            }])
+            }]))
         }
         gimli::AttributeValue::LocationListsRef(offset) => {
             let mut ranges = Vec::new();
@@ -469,9 +469,9 @@ fn parse_var_location<R: Reader>(
                     ops,
                 });
             }
-            Ok(ranges)
+            Ok(VarLocation(ranges))
         }
-        _ => Ok(vec![]),
+        _ => Ok(VarLocation::default()),
     }
 }
 
