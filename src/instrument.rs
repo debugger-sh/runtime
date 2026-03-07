@@ -5,6 +5,10 @@ use wasm_encoder::{
     reencode::{self, Reencode},
 };
 
+type Error = anyhow::Error;
+type InstrError = reencode::Error<Error>;
+type InstrResult<T = ()> = Result<T, InstrError>;
+
 // ============================================================================
 // WASM Instrumentation
 // ============================================================================
@@ -89,9 +93,9 @@ fn count_global_imports(imports: &wasmparser::Imports<'_>) -> u32 {
 }
 
 impl<'a> reencode::Reencode for Instrumenter<'a> {
-    type Error = core::convert::Infallible;
+    type Error = Error;
 
-    fn function_index(&mut self, func: u32) -> Result<u32, reencode::Error> {
+    fn function_index(&mut self, func: u32) -> InstrResult<u32> {
         Ok(if func >= self.num_imported_functions {
             func + 1
         } else {
@@ -99,7 +103,7 @@ impl<'a> reencode::Reencode for Instrumenter<'a> {
         })
     }
 
-    fn global_index(&mut self, global: u32) -> Result<u32, reencode::Error> {
+    fn global_index(&mut self, global: u32) -> InstrResult<u32> {
         Ok(if global >= self.num_imported_globals {
             global + 1
         } else {
@@ -111,7 +115,7 @@ impl<'a> reencode::Reencode for Instrumenter<'a> {
         &mut self,
         globals: &mut wasm_encoder::GlobalSection,
         section: wasmparser::GlobalSectionReader<'_>,
-    ) -> Result<(), reencode::Error<Self::Error>> {
+    ) -> InstrResult {
         self.validator
             .global_section(&section)
             .map_err(reencode::Error::from)?;
@@ -122,7 +126,7 @@ impl<'a> reencode::Reencode for Instrumenter<'a> {
         &mut self,
         _memories: &mut wasm_encoder::MemorySection,
         section: wasmparser::MemorySectionReader<'_>,
-    ) -> Result<(), reencode::Error> {
+    ) -> InstrResult {
         self.validator
             .memory_section(&section)
             .map_err(reencode::Error::from)?;
@@ -136,7 +140,7 @@ impl<'a> reencode::Reencode for Instrumenter<'a> {
         &mut self,
         functions: &mut wasm_encoder::FunctionSection,
         section: wasmparser::FunctionSectionReader<'_>,
-    ) -> Result<(), reencode::Error> {
+    ) -> InstrResult {
         self.validator
             .function_section(&section)
             .map_err(reencode::Error::from)?;
@@ -147,7 +151,7 @@ impl<'a> reencode::Reencode for Instrumenter<'a> {
         &mut self,
         code: &mut wasm_encoder::CodeSection,
         section: wasmparser::CodeSectionReader<'_>,
-    ) -> Result<(), reencode::Error> {
+    ) -> InstrResult {
         self.code_section_start = section.range().start;
         self.validator
             .code_section_start(&section.range())
@@ -159,7 +163,7 @@ impl<'a> reencode::Reencode for Instrumenter<'a> {
         &mut self,
         types: &mut wasm_encoder::TypeSection,
         section: wasmparser::TypeSectionReader<'_>,
-    ) -> Result<(), reencode::Error> {
+    ) -> InstrResult {
         self.validator
             .version(1, wasmparser::Encoding::Module, &(0..8))
             .map_err(reencode::Error::from)?;
@@ -176,7 +180,7 @@ impl<'a> reencode::Reencode for Instrumenter<'a> {
         &mut self,
         imports: &mut wasm_encoder::ImportSection,
         section: wasmparser::ImportSectionReader<'_>,
-    ) -> Result<(), reencode::Error> {
+    ) -> InstrResult {
         self.validator
             .import_section(&section)
             .map_err(reencode::Error::from)?;
@@ -234,7 +238,7 @@ impl<'a> reencode::Reencode for Instrumenter<'a> {
         &mut self,
         code: &mut wasm_encoder::CodeSection,
         func: wasmparser::FunctionBody<'_>,
-    ) -> Result<(), reencode::Error> {
+    ) -> InstrResult {
         /* Get the debug function entry for this function based on its address */
         let body_start = func.range().start;
         let code_ofs = self.code_ofs(body_start);
@@ -251,7 +255,7 @@ impl<'a> reencode::Reencode for Instrumenter<'a> {
             // Note that `wasmparser` still needs us to process this function,
             // even if we do any validation with it
             self.validator.code_section_entry(&func)?;
-            return reencode::utils::parse_function_body(self, code, func);
+            return reencode::utils::parse_function_body::<Self>(self, code, func);
         };
 
         let fn_instr = FnInstrumenter::new(self, debug_func_idx, func)?;
@@ -342,7 +346,7 @@ impl<'a, 'b, 'c> FnInstrumenter<'a, 'b, 'c> {
         instr: &'a mut Instrumenter<'b>,
         debug_func_idx: usize,
         func_body: wasmparser::FunctionBody<'c>,
-    ) -> Result<Self, reencode::Error> {
+    ) -> InstrResult<Self> {
         let mut validator = instr
             .validator
             .code_section_entry(&func_body)
@@ -386,7 +390,7 @@ impl<'a, 'b, 'c> FnInstrumenter<'a, 'b, 'c> {
         self.stack_intructions.push(instr_count + 1);
     }
 
-    fn emit_bkpt(&mut self, bkpt_idx: usize) {
+    fn emit_bkpt(&mut self, bkpt_idx: usize) -> InstrResult {
         // High-level goal:
         // Loop through all variables of the function.
         // For every variable with an active location at this point in the
@@ -400,26 +404,32 @@ impl<'a, 'b, 'c> FnInstrumenter<'a, 'b, 'c> {
         let addr = self.instr.info.locations[bkpt_idx].address;
         let locs = self.debug_func().wasm_locations_at(addr);
 
-        self.emit_operands(&locs);
-        self.emit_locals(&locs);
-        self.emit_globals(&locs);
+        self.emit_operands(&locs)?;
+        self.emit_locals(&locs)?;
+        self.emit_globals(&locs)?;
 
         self.instructions
             .push(Instruction::I32Const(bkpt_idx as i32));
         self.instructions
             .push(Instruction::Call(self.instr.bkpt_fn_index));
+        Ok(())
     }
 
-    fn emit_operands(&mut self, locs: &WasmLocations) {}
-    fn emit_locals(&mut self, locs: &WasmLocations) {}
+    fn emit_operands(&mut self, _locs: &WasmLocations) -> InstrResult {
+        Ok(())
+    }
+    fn emit_locals(&mut self, _locs: &WasmLocations) -> InstrResult {
+        Ok(())
+    }
 
-    fn emit_globals(&mut self, locs: &WasmLocations) {
+    fn emit_globals(&mut self, locs: &WasmLocations) -> InstrResult {
         for global_idx in &locs.globals {
             self.instructions
                 .push(Instruction::GlobalGet(self.instr.sp_gl_index));
             self.instructions
                 .push(Instruction::GlobalGet(*global_idx as u32));
         }
+        Ok(())
     }
 
     fn emit_footer(&mut self) {
@@ -434,7 +444,7 @@ impl<'a, 'b, 'c> FnInstrumenter<'a, 'b, 'c> {
         self.stack_intructions.push(instr_count + 1);
     }
 
-    fn instrument(mut self) -> Result<wasm_encoder::Function, reencode::Error> {
+    fn instrument(mut self) -> InstrResult<wasm_encoder::Function> {
         // Clear the stack frame for this function
         // This is a safety check to ensure we always start instrumentation at a known state.
         self.debug_func().frame.reset();
@@ -452,7 +462,7 @@ impl<'a, 'b, 'c> FnInstrumenter<'a, 'b, 'c> {
             let Some(bkpt_idx) = self.instr.breakpoints.get(&code_ofs).copied() else {
                 continue;
             };
-            self.emit_bkpt(bkpt_idx);
+            self.emit_bkpt(bkpt_idx)?;
         }
 
         while !reader.eof() {
@@ -460,7 +470,7 @@ impl<'a, 'b, 'c> FnInstrumenter<'a, 'b, 'c> {
             let code_ofs = self.instr.code_ofs(binary_ofs);
 
             if let Some(&bkpt_idx) = self.instr.breakpoints.get(&code_ofs) {
-                self.emit_bkpt(bkpt_idx);
+                self.emit_bkpt(bkpt_idx)?;
             }
 
             // Pass this operator to the wasmparser validator. It will internally
