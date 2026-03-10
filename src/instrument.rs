@@ -1,5 +1,5 @@
 use crate::types::{DebugFunction, DebugInfo, DwarfOp, WasmOp};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use wasm_encoder::{
     Instruction, MemArg,
     reencode::{self, Reencode},
@@ -345,7 +345,7 @@ struct FnInstrumenter<'a, 'b, 'c> {
     /// own locals. If `N` is the number of original locals
     /// (parameters + additional locals), then each of these will have local
     /// indices `N, N+1, ...`.
-    scratch_locals: Vec<wasm_encoder::ValType>,
+    scratch_locals: Vec<wasmparser::ValType>,
 }
 
 impl<'a, 'b, 'c> FnInstrumenter<'a, 'b, 'c> {
@@ -434,14 +434,22 @@ impl<'a, 'b, 'c> FnInstrumenter<'a, 'b, 'c> {
 
         // If the highest operand index we need exceeds the number of operands we have
         // available, then it will be impossible to recover an operand value
-        if last >= height {
+        if first >= height || last >= height {
             return error!(
-                "Couldn't instrument operand {:?} with stack height {:?}",
-                last, height
+                "Couldn't instrument operands {:?}-{:?} with stack height {:?}",
+                first, last, height
             );
         }
 
-        let nlocals = self.validator.len_locals();
+        let nlocals = self.validator.len_locals() as usize;
+
+        // `scratch_indices` contains the indices in `self.scratch_locals`
+        // which have been consumed to store operands while unrolling the operand stack.
+        //
+        // `scratch_map` maps operand stack indices to their corresponding index in `self.scratch_locals`
+        // to be used when returning values to the operand stack.
+        let mut scratch_indices = HashSet::new();
+        let mut scratch_map = HashMap::new();
 
         for operand_idx in (first..height).rev() {
             let Some(Some(ty)) = self.validator.get_operand_type(height - operand_idx - 1) else {
@@ -451,7 +459,46 @@ impl<'a, 'b, 'c> FnInstrumenter<'a, 'b, 'c> {
                 );
             };
 
-            if !locs.operands.contains(&operand_idx) {}
+            // Get or allocate a scratch local to store this stack operand
+            let scratch_idx = self
+                .scratch_locals
+                .iter()
+                .enumerate()
+                .position(|(scratch_idx, &scratch_ty)| {
+                    !scratch_indices.contains(&scratch_idx) && scratch_ty == ty
+                })
+                .unwrap_or_else(|| {
+                    let scratch_idx = self.scratch_locals.len();
+                    self.scratch_locals.push(ty);
+                    scratch_indices.insert(scratch_idx);
+                    scratch_map.insert(operand_idx, scratch_idx);
+                    scratch_idx
+                });
+
+            let scratch_idx = (scratch_idx + nlocals) as u32;
+
+            // Consume the operand at index `operand_idx` by pushing it to the scratch local
+            self.instructions.push(Instruction::LocalSet(scratch_idx));
+
+            // Store the operand value to the debug stack
+            if !locs.operands.contains(&operand_idx) {
+                self.instructions
+                    .push(Instruction::GlobalGet(self.instr.sp_gl_index));
+                self.instructions.push(Instruction::LocalGet(scratch_idx));
+                self.emit_store(ty, offset);
+            }
+        }
+
+        for operand_idx in (first..height) {
+            let Some(&scratch_idx) = scratch_map.get(&operand_idx) else {
+                return error!(
+                    "Could not recover operand {:?}: no corresponding scratch local",
+                    operand_idx
+                );
+            };
+
+            let scratch_idx = (scratch_idx + nlocals) as u32;
+            self.instructions.push(Instruction::LocalGet(scratch_idx));
         }
 
         Ok(())
@@ -646,7 +693,7 @@ impl<'a, 'b, 'c> FnInstrumenter<'a, 'b, 'c> {
             locals.push((cnt, reencode::Reencode::val_type(self.instr, ty)?));
         }
         for ty in &self.scratch_locals {
-            locals.push((1, *ty));
+            locals.push((1, reencode::Reencode::val_type(self.instr, *ty)?));
         }
 
         /* Emit the new function with new instructions and return */
