@@ -1,5 +1,5 @@
 use crate::types::{DebugInfo, WorkerOut};
-use js_sys::{Object, Reflect, SharedArrayBuffer, WebAssembly};
+use js_sys::{Object, Reflect, WebAssembly};
 use wasm_bindgen::prelude::*;
 use wasmer::{
     AsStoreMut, Function, FunctionEnv, FunctionEnvMut, Global, Imports, Memory, js::AsJs,
@@ -7,6 +7,8 @@ use wasmer::{
 
 /// SAFETY: In wasm32 there is no shared-memory threading; all execution is single-threaded.
 unsafe impl Send for Debugger {}
+
+pub const BREAKPOINT_PREFIX_BYTES: usize = 16;
 
 /// Debugger state that manages breakpoint locations and their enable/disable state.
 ///
@@ -25,32 +27,9 @@ unsafe impl Send for Debugger {}
 /// The instrumented WASM uses 0-based indices: `bkpt(N)` checks `flags[N]`.
 pub struct Debugger {
     info: DebugInfo,
-    buffer: SharedArrayBuffer,
-    /// The main program memory
-    main_memory: js_sys::WebAssembly::Memory,
-    /// The memory which holds the debug stack during execution
-    debug_memory: js_sys::WebAssembly::Memory,
     /// The location of the debug stack pointer.
     /// Points to the start of the current function's stack frame.
     stack_pointer: js_sys::WebAssembly::Global,
-}
-
-const SENTINEL_BYTES: u32 = 4;
-
-fn create_memory(memory: wasmer::MemoryType) -> Result<WebAssembly::Memory, JsValue> {
-    let memory_desc = Object::new();
-
-    Reflect::set(&memory_desc, &"initial".into(), &memory.minimum.0.into())?;
-
-    if let Some(maximum) = memory.maximum {
-        Reflect::set(&memory_desc, &"maximum".into(), &maximum.0.into())?;
-    }
-
-    Reflect::set(&memory_desc, &"shared".into(), &memory.shared.into())?;
-
-    let memory = WebAssembly::Memory::new(&memory_desc)?;
-
-    Ok(memory)
 }
 
 fn create_stack_pointer(info: &DebugInfo) -> Result<WebAssembly::Global, JsValue> {
@@ -58,23 +37,19 @@ fn create_stack_pointer(info: &DebugInfo) -> Result<WebAssembly::Global, JsValue
 
     Reflect::set(&global_desc, &"value".into(), &"i32".into())?;
     Reflect::set(&global_desc, &"mutable".into(), &true.into())?;
-    let global =
-        WebAssembly::Global::new(&global_desc, &info.memory.debug.minimum.bytes().0.into())?;
 
+    let buffer = info.stack.memory.buffer();
+    let size_bytes = Reflect::get(&buffer, &"byteLength".into())?;
+
+    let global = WebAssembly::Global::new(&global_desc, &size_bytes)?;
     Ok(global)
 }
 
 impl Debugger {
     pub fn new(info: DebugInfo) -> Self {
-        let buffer_size = (SENTINEL_BYTES as usize) + info.locations.len();
-        let buffer = SharedArrayBuffer::new(buffer_size as u32);
-
         Self {
-            main_memory: create_memory(info.memory.main).expect("Created program memory"),
-            debug_memory: create_memory(info.memory.debug).expect("Created debug memory"),
             stack_pointer: create_stack_pointer(&info).expect("Created stack pointer"),
             info,
-            buffer,
         }
     }
 
@@ -86,13 +61,19 @@ impl Debugger {
         imports.define(
             "debug",
             "memory",
-            Memory::from_jsvalue(store, &self.info.memory.main, &self.main_memory).unwrap(),
+            Memory::from_jsvalue(
+                store,
+                &self.info.memory.ty,
+                self.info.memory.memory.as_ref(),
+            )
+            .unwrap(),
         );
 
         imports.define(
             "debug",
             "stack",
-            Memory::from_jsvalue(store, &self.info.memory.debug, &self.debug_memory).unwrap(),
+            Memory::from_jsvalue(store, &self.info.stack.ty, self.info.stack.memory.as_ref())
+                .unwrap(),
         );
 
         imports.define(
@@ -123,8 +104,6 @@ impl Debugger {
     fn send_debug_info(&self) {
         WorkerOut::Debug {
             info: self.info.clone(),
-            breakpoint_buffer: self.buffer.clone(),
-            memory: self.main_memory.clone(),
         }
         .send();
         self.wait_for_resume();
@@ -136,17 +115,17 @@ impl Debugger {
             return false;
         }
 
-        let flags = js_sys::Uint8Array::new_with_byte_offset_and_length(
-            &self.buffer,
-            SENTINEL_BYTES,
-            self.info.locations.len() as u32,
+        let flags = js_sys::Uint8Array::new_with_byte_offset(
+            &self.info.breakpoints,
+            BREAKPOINT_PREFIX_BYTES as u32,
         );
         flags.get_index(index as u32) != 0
     }
 
     /// Blocks until TypeScript signals resume via `Atomics.notify()` on the sentinel.
     pub fn wait_for_resume(&self) {
-        let sentinel = js_sys::Int32Array::new_with_byte_offset_and_length(&self.buffer, 0, 1);
+        let sentinel =
+            js_sys::Int32Array::new_with_byte_offset_and_length(&self.info.breakpoints, 0, 1);
         let current = js_sys::Atomics::load(&sentinel, 0).unwrap_or(0);
         let _ = js_sys::Atomics::wait(&sentinel, 0, current);
     }
@@ -159,12 +138,7 @@ impl Debugger {
             return false;
         }
 
-        WorkerOut::Breakpoint {
-            location_index: index,
-            frames: Vec::default(),
-        }
-        .send();
-
+        WorkerOut::Breakpoint.send();
         self.wait_for_resume();
         true
     }

@@ -1,4 +1,5 @@
-use crate::types::{DebugFunction, DebugInfo, LocationInfo};
+use crate::debug::BREAKPOINT_PREFIX_BYTES;
+use crate::types::{DebugFunction, DebugInfo, LocationInfo, MemoryDescriptor};
 use gimli::read::ReaderOffset;
 use gimli::{EndianSlice, LittleEndian, Reader};
 use std::borrow::Cow;
@@ -9,7 +10,6 @@ use wasmparser::{Parser, Payload};
 pub fn parse_debug_info(wasm_bytes: &[u8]) -> anyhow::Result<DebugInfo> {
     let mut sections: HashMap<&str, &[u8]> = HashMap::new();
     let mut memory_initial = 0u32;
-    let mut memory_maximum = None::<u32>;
 
     for payload in Parser::new(0).parse_all(wasm_bytes) {
         let payload = payload?;
@@ -21,7 +21,6 @@ pub fn parse_debug_info(wasm_bytes: &[u8]) -> anyhow::Result<DebugInfo> {
                 for mem in reader {
                     let mem = mem?;
                     memory_initial = mem.initial as u32;
-                    memory_maximum = mem.maximum.map(|m| m as u32).or(Some(16 * memory_initial));
                     break;
                 }
             }
@@ -53,8 +52,8 @@ pub fn parse_debug_info(wasm_bytes: &[u8]) -> anyhow::Result<DebugInfo> {
     }
 
     let breakpoints = create_breakpoints_buffer(locations.len());
-    let memory = create_wasm_memory(memory_initial, memory_maximum);
-    let stack = create_wasm_memory(1, Some(1));
+    let memory = MemoryDescriptor::new(memory_initial, 16 * memory_initial);
+    let stack = MemoryDescriptor::new(16, 16);
     let dwarf = collect_dwarf_bytes(&sections);
 
     Ok(DebugInfo {
@@ -70,20 +69,11 @@ pub fn parse_debug_info(wasm_bytes: &[u8]) -> anyhow::Result<DebugInfo> {
 
 fn create_breakpoints_buffer(num_locations: usize) -> js_sys::SharedArrayBuffer {
     // 3 u32s for metadata and rest is breakpoint status
-    js_sys::SharedArrayBuffer::new((12 + num_locations) as u32)
+    js_sys::SharedArrayBuffer::new((BREAKPOINT_PREFIX_BYTES + num_locations) as u32)
 }
 
-fn create_wasm_memory(initial: u32, maximum: Option<u32>) -> js_sys::WebAssembly::Memory {
-    let desc = js_sys::Object::new();
-    js_sys::Reflect::set(&desc, &"initial".into(), &(initial as u32).into()).unwrap();
-    if let Some(max) = maximum {
-        js_sys::Reflect::set(&desc, &"maximum".into(), &(max as u32).into()).unwrap();
-    }
-    js_sys::WebAssembly::Memory::new(&desc).expect("create WebAssembly.Memory")
-}
-
-fn collect_dwarf_bytes(sections: &HashMap<&str, &[u8]>) -> Vec<u8> {
-    let mut out = Vec::new();
+fn collect_dwarf_bytes(sections: &HashMap<&str, &[u8]>) -> HashMap<String, Vec<u8>> {
+    let mut out = HashMap::new();
     for name in [
         ".debug_abbrev",
         ".debug_info",
@@ -92,10 +82,29 @@ fn collect_dwarf_bytes(sections: &HashMap<&str, &[u8]>) -> Vec<u8> {
         ".debug_str",
     ] {
         if let Some(data) = sections.get(name) {
-            out.extend_from_slice(data);
+            out.insert(name.to_string(), data.to_vec());
         }
     }
     out
+}
+
+/// Rebuild a gimli::Dwarf from stored sections and run a callback with it.
+/// The Dwarf borrows from internal buffers and cannot be returned; use this to run logic that needs it.
+pub fn with_dwarf<R>(
+    bytes: &HashMap<String, Vec<u8>>,
+    f: impl FnOnce(&gimli::Dwarf<EndianSlice<'_, LittleEndian>>) -> R,
+) -> Result<R, gimli::Error> {
+    let load = |id: gimli::SectionId| {
+        Ok::<_, gimli::Error>(
+            bytes
+                .get(id.name())
+                .map(|v| Cow::Borrowed(v.as_slice()))
+                .unwrap_or(Cow::Borrowed(&[])),
+        )
+    };
+    let sections = gimli::DwarfSections::load(load)?;
+    let dwarf = sections.borrow(|s| EndianSlice::new(Cow::as_ref(s), LittleEndian));
+    Ok(f(&dwarf))
 }
 
 // ============================================================================

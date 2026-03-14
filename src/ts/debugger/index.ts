@@ -1,11 +1,6 @@
 import EventEmitter from 'events';
 
-import type {
-  DebugInfo as RustDebugInfo,
-  LocationInfo as RustLocation,
-  StackFrame as RustStackFrame,
-  WorkerOut,
-} from '../../../pkg/runtime';
+import type { LocationInfo as RustLocation, WorkerOut } from '../../../pkg/runtime';
 import { Internals } from '../internals';
 import { Breakpoint, BreakpointSpecifier } from './breakpoint';
 import { BreakpointHit } from './hit';
@@ -29,13 +24,13 @@ export class Debugger extends EventEmitter<DebuggerEventMap> {
     removeWorker(worker: Worker): void;
 
     /**
-     * Int32Array view over bytes 0..3 of the SharedArrayBuffer.
+     * Int32Array view over bytes 0..11 of the SharedArrayBuffer.
      * Used with `Atomics.notify()` to resume execution after a breakpoint hit.
      */
     sentinel: Int32Array;
 
     /**
-     * Uint8Array view over bytes 4+ of the SharedArrayBuffer.
+     * Uint8Array view over bytes 16+ of the SharedArrayBuffer.
      * `flags[N]` is the enable count for location N (0-based).
      * A location is "hit" if its count is positive.
      */
@@ -45,18 +40,6 @@ export class Debugger extends EventEmitter<DebuggerEventMap> {
   private _locations: Array<LocationInfo> = [];
   public get locations(): ReadonlyArray<LocationInfo> {
     return this._locations;
-  }
-
-  private _info?: RustDebugInfo;
-  /** Latest debug info sent by the worker (if any). */
-  public get info(): RustDebugInfo | undefined {
-    return this._info;
-  }
-
-  private _memory?: WebAssembly.Memory;
-  /** Program memory sent by the worker (if any). */
-  public get memory(): WebAssembly.Memory | undefined {
-    return this._memory;
   }
 
   private _breakpoints: Set<Breakpoint> = new Set();
@@ -118,19 +101,19 @@ export class Debugger extends EventEmitter<DebuggerEventMap> {
         address: loc.address,
       }));
 
-      this._info = data.info;
-      this._memory = data.memory as unknown as WebAssembly.Memory;
-      this[Internals].sentinel = new Int32Array(data.breakpoint_buffer, 0, 1);
-      this[Internals].flags = new Uint8Array(data.breakpoint_buffer, 4);
+      const info = data.info;
+      this[Internals].sentinel = new Int32Array(info.breakpoints, 0, 4);
+      this[Internals].flags = new Uint8Array(info.breakpoints, 16);
       this._breakpoints.forEach((bp) => bp[Internals].resolve());
       this.resume();
       return;
     }
 
     if (data.type === 'breakpoint') {
-      const loc = this._locations[data.location_index];
+      const index = this[Internals].sentinel[2];
+      const loc = this._locations[index];
       if (!loc) return; // TODO: possible deadlock if no hit registered but worker waiting?
-      const hit = BreakpointHit[Internals].create(this, loc, data.frames as RustStackFrame[]);
+      const hit = BreakpointHit[Internals].create(this, loc, []);
       this.emit('breakpoint', hit, this);
     }
   }

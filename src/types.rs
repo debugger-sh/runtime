@@ -3,6 +3,7 @@ use serde_repr::Serialize_repr;
 use std::collections::{HashMap, HashSet};
 use tsify::Tsify;
 use wasm_bindgen::JsValue;
+use wasmer::{MemoryType, Pages};
 use web_sys::DedicatedWorkerGlobalScope;
 
 #[derive(Debug, Tsify, Deserialize)]
@@ -73,7 +74,7 @@ impl<'a> WorkerOut<'a> {
     }
 }
 
-#[derive(Debug, Clone, Tsify, Serialize)]
+#[derive(Debug, Clone, Tsify, Serialize, Deserialize)]
 pub struct LocationInfo {
     /// Index into [DebugInfo::files]
     pub file: usize,
@@ -83,8 +84,29 @@ pub struct LocationInfo {
     pub address: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryDescriptor {
+    #[serde(with = "serde_wasm_bindgen::preserve")]
+    pub memory: js_sys::WebAssembly::Memory,
+    pub ty: MemoryType,
+}
+
+impl MemoryDescriptor {
+    pub fn new(initial: u32, maximum: u32) -> Self {
+        let desc = js_sys::Object::new();
+        js_sys::Reflect::set(&desc, &"initial".into(), &(initial as u32).into()).unwrap();
+        js_sys::Reflect::set(&desc, &"maximum".into(), &(maximum as u32).into()).unwrap();
+        js_sys::Reflect::set(&desc, &"shared".into(), &true.into()).unwrap();
+
+        let memory = js_sys::WebAssembly::Memory::new(&desc).expect("create WebAssembly.Memory");
+
+        let ty = MemoryType::new(Pages(initial), Some(Pages(maximum)), true);
+        Self { memory, ty }
+    }
+}
+
 /// Debug information parsed from DWARF
-#[derive(Debug, Clone, Tsify, Serialize)]
+#[derive(Debug, Clone, Tsify, Serialize, Deserialize)]
 pub struct DebugInfo {
     /// Breakpoint locations (file index, line, col, WASM address).
     pub locations: Vec<LocationInfo>,
@@ -94,6 +116,7 @@ pub struct DebugInfo {
 
     /// SharedArrayBuffer that controls breakpoint operation in the debugger.
     ///
+    /// - `[u32` Sentinel
     /// - `[u32]` Mode:
     ///   - `0` — Pause on breakpoints
     ///   - `1` — Step into (pause on next location in program order)
@@ -106,19 +129,17 @@ pub struct DebugInfo {
     pub breakpoints: js_sys::SharedArrayBuffer,
 
     /// The main memory of the executing program
-    #[serde(with = "serde_wasm_bindgen::preserve")]
-    pub memory: js_sys::WebAssembly::Memory,
+    pub memory: MemoryDescriptor,
 
     /// The debug stack of the executing program
-    #[serde(with = "serde_wasm_bindgen::preserve")]
-    pub stack: js_sys::WebAssembly::Memory,
+    pub stack: MemoryDescriptor,
 
-    /// The raw DWARF binary of this object for use with a debugger
-    pub dwarf: Vec<u8>,
+    /// Raw DWARF sections (by name, e.g. ".debug_info") for use with a debugger.
+    pub dwarf: HashMap<String, Vec<u8>>,
 }
 
-#[derive(Debug, Clone, Hash, Eq, PartialEq)]
-pub enum WasmOp {
+#[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
+pub enum WasmLocation {
     /// The index of a local in the currently executing function.
     Local(usize),
     /// The index of a global.
@@ -127,7 +148,7 @@ pub enum WasmOp {
     Operand(usize),
 }
 
-#[derive(Debug, Clone, Tsify, Serialize)]
+#[derive(Debug, Clone, Tsify, Serialize, Deserialize)]
 pub struct DebugFunction {
     /// Offset of this function in the DWARF
     pub offset: usize,
@@ -149,7 +170,12 @@ impl DebugFunction {
     /// Ensures an entry exists for `loc` and `ty` and returns its offset.
     /// `bkpt` will be added to the lifetime of the found or created entry.
     /// Returns [None] if an entry could not be created (e.g. we cannot store wasm ref types).
-    pub fn place(&mut self, loc: WasmOp, ty: wasmparser::ValType, bkpt: usize) -> Option<usize> {
+    pub fn place(
+        &mut self,
+        loc: WasmLocation,
+        ty: wasmparser::ValType,
+        bkpt: usize,
+    ) -> Option<usize> {
         use wasmparser::ValType;
         if matches!(ty, ValType::Ref(_)) {
             return None;
@@ -183,14 +209,15 @@ impl DebugFunction {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Tsify, Serialize, Deserialize)]
 pub struct DebugFrameEntry {
     /// The byte offset of this entry in its containing stack frame
     pub offset: usize,
     /// The WebAssembly type of the value stored by the entry
+    #[serde(with = "crate::util::val_type_serde")]
     pub ty: wasmparser::ValType,
     /// The WebAssembly location (local, global, or stack) represented by this entry's value
-    pub location: WasmOp,
+    pub location: WasmLocation,
     /// A list of breakpoint indices for which this entry is considered valid.
     ///
     /// If a breakpoint index `N` is contained in this list, then accessing this entry's
