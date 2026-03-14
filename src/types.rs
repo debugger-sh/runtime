@@ -63,15 +63,9 @@ pub enum WorkerOut<'a> {
         filename: String,
     },
 
-    /// Sent when execution pauses at an enabled breakpoint.
+    /// Sent when execution pauses
     #[serde(rename = "breakpoint")]
-    Breakpoint {
-        /// 0-based index into [DebugInfo::locations] array
-        location_index: usize,
-        /// List of active stack frames. The last one is most recent
-        frames: Vec<StackFrame>,
-    },
-
+    Breakpoint,
     #[serde(rename = "stop")]
     Stop,
 }
@@ -108,7 +102,6 @@ pub struct DebugInfo {
     /// Deduplicated source filenames; index matches `LocationInfo::file`.
     pub files: Vec<String>,
     pub functions: Vec<DebugFunction>,
-    pub types: Vec<DebugType>,
 }
 
 #[derive(Debug, Clone, Tsify, Serialize)]
@@ -127,20 +120,6 @@ impl Default for MemoryInfo {
     }
 }
 
-/// A single DWARF expression operation, converted from `gimli::Operation`
-#[derive(Debug, Clone)]
-pub enum DwarfOp {
-    /// Push a value stored in a WASM location.
-    Wasm(WasmOp),
-
-    /// `DW_OP_fbreg +offset`: push frame_base + offset
-    /// The instrumenter inlines the function's `frame_base` ops, then adds the offset
-    FrameOffset { offset: i64 },
-
-    /// `DW_OP_stack_value`: marks the expression result as a value, not an address
-    StackValue,
-}
-
 #[derive(Debug, Clone, Hash, Eq, PartialEq)]
 pub enum WasmOp {
     /// The index of a local in the currently executing function.
@@ -151,56 +130,19 @@ pub enum WasmOp {
     Operand(usize),
 }
 
-#[derive(Default, Debug, Clone)]
-pub struct VarLocation(pub Vec<VarLocationRange>);
-
-impl VarLocation {
-    pub fn is_optimized_out(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    pub fn location_at(&self, addr: usize) -> Option<&VarLocationRange> {
-        self.0
-            .iter()
-            .find(|range| addr >= range.start && addr < range.end)
-    }
-}
-
-/// A location expression valid over a specific PC range.
-/// At `-O0` a variable typically has one range spanning the whole function.
-/// At higher optimization levels, DWARF location lists produce multiple ranges
-/// as the variable moves between locals, memory, or gets optimized out.
-#[derive(Debug, Clone)]
-pub struct VarLocationRange {
-    /// Code-section-relative start PC (inclusive).
-    pub start: usize,
-    /// Code-section-relative end PC (exclusive).
-    pub end: usize,
-    /// DWARF operations that produce the variable's value.
-    pub ops: Vec<DwarfOp>,
-}
-
 #[derive(Debug, Clone, Tsify, Serialize)]
 pub struct DebugFunction {
-    pub name: String,
+    /// Offset of this function in the DWARF
+    pub offset: usize,
     /// Code section offset of the start of the function
     pub address: usize,
-    pub variables: Vec<DebugVariable>,
-    #[serde(skip)]
-    pub frame: DebugFrame,
-}
-
-#[derive(Debug, Clone)]
-pub struct DebugFrame {
     /// The total size in bytes of the stack frame, including it's 32-bit tag
     pub size: usize,
-    /// DWARF expression for the function's frame base (`DW_AT_frame_base`)
-    pub base: VarLocation,
     /// The entries in this stack frame
     pub layout: Vec<DebugFrameEntry>,
 }
 
-impl DebugFrame {
+impl DebugFunction {
     /// Clears the layout of the stack frame and resets it to its minimum size.
     pub fn reset(&mut self) {
         self.size = 4; // Space for debug function index tag
@@ -265,121 +207,4 @@ pub struct DebugFrameEntry {
     /// [wasmparser::ValType::F64] later on in the function as values are shifted on and off
     /// the operand stack.
     pub lifetime: HashSet<usize>,
-}
-
-#[derive(Debug, Clone, Tsify, Serialize)]
-pub struct DebugVariable {
-    /// Index into [DebugInfo::types]
-    pub ty: usize,
-    pub name: String,
-    /// Where and when the variable's value can be read.
-    /// Empty if the variable is always optimized out.
-    #[serde(skip)]
-    pub location: VarLocation,
-}
-
-#[derive(Debug, Clone, Tsify, Serialize)]
-pub struct ObjectField {
-    /// Byte offset into this type where the field is stored
-    offset: usize,
-    /// The name of this field
-    name: String,
-    /// The type of this object. Indexes into [DebugInfo::types]
-    ty: usize,
-}
-
-#[derive(Debug, Clone, Tsify, Serialize)]
-#[serde(tag = "type")]
-pub enum TypeEncoding {
-    #[serde(rename = "signed")]
-    Signed,
-    #[serde(rename = "unsigned")]
-    Unsigned,
-    #[serde(rename = "float")]
-    Float,
-    #[serde(rename = "bool")]
-    Bool,
-    #[serde(rename = "address")]
-    Address {
-        /// What type this pointer points at. Indexes into [DebugInfo::types]
-        at: usize,
-    },
-    #[serde(rename = "object")]
-    Object { fields: Vec<ObjectField> },
-    #[serde(rename = "unknown")]
-    Unknown,
-}
-
-#[derive(Debug, Clone, Tsify, Serialize)]
-pub struct DebugType {
-    pub name: String,
-    pub size: usize,
-    pub encoding: TypeEncoding,
-}
-
-#[derive(Debug, Clone, Tsify, Serialize)]
-pub struct StackFrame {
-    /// Index into [DebugInfo::functions]
-    function: usize,
-    /// List of live variables within this frame
-    variables: Vec<StackVariable>,
-}
-
-#[derive(Debug, Clone, Tsify, Serialize)]
-pub struct StackVariable {
-    /// Index into [DebugFunction::variables] for this variable's function
-    index: usize,
-    /// List of pieces making up this variable's value
-    pieces: Vec<Piece>,
-}
-
-/// Represents a piece of a value that was reconstructed at runtime
-/// from a location expression.
-///
-/// These are sent directly to the client side JavaScript to be
-/// re-interpreted into the correct client interface.
-#[derive(Debug, Clone, Tsify, Serialize)]
-pub struct Piece {
-    /// If given, the size of the piece in bits.  If `None`, there
-    /// must be only one piece whose size is all of the object.
-    pub bit_size: Option<u64>,
-    /// If given, the bit offset of the piece within the location.
-    /// If the location is `Location::Value`,
-    /// then this offset is from the least significant bit end of
-    /// the register or value.
-    /// If the location is a `Location::Address` then the offset uses
-    /// the bit numbering and direction conventions of the language
-    /// and target system.
-    ///
-    /// If `None`, the piece starts at the location. If the
-    /// location is a register whose size is larger than the piece,
-    /// then placement within the register is defined by the ABI.
-    ///
-    /// Note that this determines which part of the **location** to extract
-    /// to determine the value of this piece. The placement of this piece
-    /// within the final value is determined by the sequence of pieces that
-    /// came before it and their `bit_size`s.
-    pub bit_offset: Option<u64>,
-    /// Where this piece is to be found.
-    pub location: PieceLocation,
-}
-
-#[derive(Debug, Clone, Tsify, Serialize)]
-#[serde(tag = "type")]
-pub enum PieceLocation {
-    /// The piece is empty. Ordinarily this means the piece has been optimized away.
-    #[serde(rename = "empty")]
-    Empty,
-    /// The piece is found in the program memory.
-    #[serde(rename = "address")]
-    Address {
-        /// The address.
-        address: u64,
-    },
-    /// The piece has no location but its value is known.
-    #[serde(rename = "value")]
-    Value {
-        /// The value.
-        value: u64,
-    },
 }
