@@ -142,13 +142,11 @@ impl DebugHost {
 
             let size = debug_fn.size as u32;
 
-            let variables =
-                get_frame_variables(&dwarf, debug_fn, &stack_buf, &prog_buf, offset, bkpt_idx);
-
+            // Variables are resolved lazily via get_variables_for_frame() when the frame is expanded.
             frames.push(StackFrame {
                 name: format!("function_{}", func_idx),
                 function: func_idx,
-                variables,
+                variables: vec![],
             });
 
             offset += size;
@@ -159,6 +157,70 @@ impl DebugHost {
 
         frames
     }
+
+    /// Returns variables for the frame at the given index (0 = innermost). Called lazily when the
+    /// UI expands a frame. Returns an empty array if not paused or frame_index is out of range.
+    #[wasm_bindgen]
+    pub fn get_variables_for_frame(&self, frame_index: usize) -> js_sys::Array {
+        let meta = js_sys::Uint32Array::new_with_byte_offset_and_length(
+            &self.info.breakpoints,
+            0,
+            BREAKPOINT_PREFIX_BYTES as u32 / 4,
+        );
+        let sp = meta.get_index(3);
+        if sp == 0 {
+            return js_sys::Array::new();
+        }
+        let bkpt_idx = meta.get_index(2) as usize;
+
+        let stack_buf = Reflect::get(self.info.stack.memory.as_ref(), &"buffer".into())
+            .unwrap_or(JsValue::NULL);
+        let stack_len: u32 = Reflect::get(&stack_buf, &"byteLength".into())
+            .ok()
+            .and_then(|v| v.as_f64())
+            .map(|f| f as u32)
+            .unwrap_or(0);
+        if stack_len == 0 {
+            return js_sys::Array::new();
+        }
+
+        let prog_buf = Reflect::get(self.info.memory.memory.as_ref(), &"buffer".into())
+            .unwrap_or(JsValue::NULL);
+        let dwarf = to_dwarf(&self.info.dwarf);
+
+        let mut offset: u32 = sp;
+        let mut current = 0usize;
+        while offset + 4 <= stack_len {
+            let u32_view =
+                js_sys::Uint32Array::new_with_byte_offset_and_length(&stack_buf, offset, 1);
+            let func_idx = u32_view.get_index(0);
+            let Some(debug_fn) = self.info.functions.get(func_idx as usize) else {
+                break;
+            };
+            let size = debug_fn.size as u32;
+
+            if current == frame_index {
+                let variables =
+                    get_frame_variables(&dwarf, debug_fn, &stack_buf, &prog_buf, offset, bkpt_idx, frame_index);
+                let arr = js_sys::Array::new();
+                for v in variables {
+                    arr.push(&JsValue::from(Variable {
+                        name: v.name,
+                        ty: v.ty,
+                        value: v.value,
+                    }));
+                }
+                return arr;
+            }
+
+            current += 1;
+            offset += size;
+            if size == 0 {
+                break;
+            }
+        }
+        js_sys::Array::new()
+    }
 }
 
 // ============================================================================
@@ -166,6 +228,7 @@ impl DebugHost {
 // ============================================================================
 
 /// Internal representation of how a variable's value should be interpreted.
+#[derive(PartialEq)]
 enum TypeKind {
     Signed,
     Unsigned,
@@ -196,12 +259,14 @@ fn get_frame_variables(
     prog_buf: &JsValue,
     frame_sp: u32,
     bkpt_idx: usize,
+    frame_index: usize,
 ) -> Vec<Variable> {
     crate::log!(
-        "[host] get_frame_variables: fn addr=0x{:x}, bkpt={}, layout_entries={}",
+        "[host] get_frame_variables: fn addr=0x{:x}, bkpt={}, layout_entries={}, frame_index={}",
         debug_fn.address,
         bkpt_idx,
-        debug_fn.layout.len()
+        debug_fn.layout.len(),
+        frame_index
     );
     let mut units = dwarf.units();
     while let Ok(Some(header)) = units.next() {
@@ -209,7 +274,7 @@ fn get_frame_variables(
         let Ok(mut tree) = unit.entries_tree(None) else { continue };
         let Ok(root) = tree.root() else { continue };
         if let Some(vars) =
-            search_subprogram(dwarf, &unit, root, debug_fn, stack_buf, prog_buf, frame_sp, bkpt_idx)
+            search_subprogram(dwarf, &unit, root, debug_fn, stack_buf, prog_buf, frame_sp, bkpt_idx, frame_index)
         {
             crate::log!("[host] found {} variable(s) for fn 0x{:x}", vars.len(), debug_fn.address);
             return vars;
@@ -229,6 +294,7 @@ fn search_subprogram<R: Reader>(
     prog_buf: &JsValue,
     frame_sp: u32,
     bkpt_idx: usize,
+    frame_index: usize,
 ) -> Option<Vec<Variable>> {
     let tag = node.entry().tag();
     let is_subprogram = tag == gimli::DW_TAG_subprogram;
@@ -259,6 +325,7 @@ fn search_subprogram<R: Reader>(
         }
 
         // Found our function — collect variable children.
+        let is_caller_frame = frame_index > 0;
         let mut vars = Vec::new();
         let mut children = node.children();
         while let Ok(Some(child)) = children.next() {
@@ -270,7 +337,7 @@ fn search_subprogram<R: Reader>(
             ) {
                 if let Some(v) = make_variable(
                     dwarf, unit, child.entry(), debug_fn,
-                    stack_buf, prog_buf, frame_sp, bkpt_idx, frame_base_global,
+                    stack_buf, prog_buf, frame_sp, bkpt_idx, frame_base_global, is_caller_frame,
                 ) {
                     vars.push(v);
                 }
@@ -285,7 +352,7 @@ fn search_subprogram<R: Reader>(
         let mut children = node.children();
         while let Ok(Some(child)) = children.next() {
             if let Some(result) =
-                search_subprogram(dwarf, unit, child, debug_fn, stack_buf, prog_buf, frame_sp, bkpt_idx)
+                search_subprogram(dwarf, unit, child, debug_fn, stack_buf, prog_buf, frame_sp, bkpt_idx, frame_index)
             {
                 return Some(result);
             }
@@ -316,6 +383,11 @@ fn frame_base_global_from_entry<R: Reader>(
 
 /// Look up a saved global in the debug frame, use its value as a base address,
 /// add `mem_offset`, and read a C-typed value from program linear memory.
+///
+/// When `is_caller_frame` is true (frame_index > 0), we relax the lifetime check for
+/// layout lookups: the current bkpt was hit in a callee, so this frame's slots were
+/// never written at this stop — but they still hold values from when we last hit a
+/// breakpoint in this function (or from the prologue). We use them anyway.
 fn read_from_linear_memory(
     name: &str,
     global_idx: usize,
@@ -325,11 +397,17 @@ fn read_from_linear_memory(
     prog_buf: &JsValue,
     frame_sp: u32,
     bkpt_idx: usize,
+    is_caller_frame: bool,
     kind: &TypeKind,
     byte_size: u32,
 ) -> Option<String> {
     let frame_entry = match debug_fn.layout.iter().find(|e| {
-        e.location == WasmLocation::Global(global_idx) && e.lifetime.contains(&bkpt_idx)
+        let location_match = e.location == WasmLocation::Global(global_idx);
+        if is_caller_frame {
+            location_match
+        } else {
+            location_match && e.lifetime.contains(&bkpt_idx)
+        }
     }) {
         Some(e) => e,
         None => {
@@ -371,6 +449,7 @@ fn make_variable<R: Reader>(
     frame_sp: u32,
     bkpt_idx: usize,
     frame_base_global: Option<usize>,
+    is_caller_frame: bool,
 ) -> Option<Variable> {
     // --- name ---
     let name_attr = entry.attr(gimli::DW_AT_name)?;
@@ -400,16 +479,38 @@ fn make_variable<R: Reader>(
     };
 
     // --- type name, interpretation, and byte size ---
-    let (ty_name, kind, byte_size) = entry
+    let (ty_name, mut kind, mut byte_size) = entry
         .attr(gimli::DW_AT_type)
         .map(|a| read_type(dwarf, unit, a.value(), 8))
         .unwrap_or_else(|| ("?".to_string(), TypeKind::Other, 4));
 
+    // If DWARF gave us Other (missing/wrong type ref or encoding), infer float from type name
+    // so that e.g. "float j = 10.4" displays correctly.
+    if kind == TypeKind::Other {
+        let name_lower = ty_name.to_lowercase();
+        if name_lower == "float" || name_lower.starts_with("float ") {
+            kind = TypeKind::Float;
+            byte_size = 4;
+        } else if name_lower == "double" || name_lower.starts_with("double ") {
+            kind = TypeKind::Float;
+            byte_size = 8;
+        }
+    }
+
     // --- read the value based on location kind ---
+    // Use the variable's type from DWARF (kind + byte_size) to interpret the value,
+    // not the layout's stored type, so floats and other types display correctly
+    // even if the layout type was wrong or mismatched.
+    let read_ty = c_val_type(&kind, byte_size);
     let value = match var_loc {
         VarLoc::Wasm(WasmLocation::Local(local_idx)) => {
             let frame_entry = match debug_fn.layout.iter().find(|e| {
-                e.location == WasmLocation::Local(local_idx) && e.lifetime.contains(&bkpt_idx)
+                let location_match = e.location == WasmLocation::Local(local_idx);
+                if is_caller_frame {
+                    location_match
+                } else {
+                    location_match && e.lifetime.contains(&bkpt_idx)
+                }
             }) {
                 Some(e) => e,
                 None => {
@@ -420,12 +521,17 @@ fn make_variable<R: Reader>(
                     return None;
                 }
             };
-            format_value(stack_buf, frame_sp + frame_entry.offset as u32, frame_entry.ty, &kind)
+            format_value(stack_buf, frame_sp + frame_entry.offset as u32, read_ty, &kind)
         }
 
         VarLoc::Wasm(WasmLocation::Global(global_idx)) => {
             let frame_entry = match debug_fn.layout.iter().find(|e| {
-                e.location == WasmLocation::Global(global_idx) && e.lifetime.contains(&bkpt_idx)
+                let location_match = e.location == WasmLocation::Global(global_idx);
+                if is_caller_frame {
+                    location_match
+                } else {
+                    location_match && e.lifetime.contains(&bkpt_idx)
+                }
             }) {
                 Some(e) => e,
                 None => {
@@ -433,7 +539,7 @@ fn make_variable<R: Reader>(
                     return None;
                 }
             };
-            format_value(stack_buf, frame_sp + frame_entry.offset as u32, frame_entry.ty, &kind)
+            format_value(stack_buf, frame_sp + frame_entry.offset as u32, read_ty, &kind)
         }
 
         VarLoc::FrameRelative(frame_offset) => {
@@ -446,14 +552,14 @@ fn make_variable<R: Reader>(
             };
             read_from_linear_memory(
                 &name, global_idx, frame_offset, debug_fn,
-                stack_buf, prog_buf, frame_sp, bkpt_idx, &kind, byte_size,
+                stack_buf, prog_buf, frame_sp, bkpt_idx, is_caller_frame, &kind, byte_size,
             )?
         }
 
         VarLoc::GlobalPlusOffset { global_idx, offset } => {
             read_from_linear_memory(
                 &name, global_idx, offset as i64, debug_fn,
-                stack_buf, prog_buf, frame_sp, bkpt_idx, &kind, byte_size,
+                stack_buf, prog_buf, frame_sp, bkpt_idx, is_caller_frame, &kind, byte_size,
             )?
         }
 
@@ -561,7 +667,15 @@ fn read_type<R: Reader>(
                     2 => TypeKind::Bool,           // DW_ATE_boolean
                     _ => TypeKind::Unsigned,
                 })
-                .unwrap_or(TypeKind::Unsigned);
+                .unwrap_or_else(|| {
+                    // Encoding missing: infer from type name so float/double display correctly
+                    let n = name.to_lowercase();
+                    if n == "float" || n == "double" {
+                        TypeKind::Float
+                    } else {
+                        TypeKind::Unsigned
+                    }
+                });
             (name, kind, byte_size)
         }
 

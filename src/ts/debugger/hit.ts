@@ -16,9 +16,9 @@ export class BreakpointHit {
     this.debugger.resume();
   }
 
-  /** Stack frames at the pause point (innermost first). */
+  /** Stack frames at the pause point (innermost first). Variables are resolved lazily per frame. */
   public get frames(): ReadonlyArray<PausedStackFrame> {
-    return this._frames.map((f, i) => new PausedStackFrame(f, i));
+    return this._frames.map((f, i) => new PausedStackFrame(this.debugger, f, i));
   }
 
   /** Most recent (innermost) stack frame, if any. */
@@ -37,7 +37,10 @@ export class BreakpointHit {
 }
 
 export class PausedStackFrame {
+  private _variables: Variable[] | null = null;
+
   public constructor(
+    private readonly dbg: Debugger,
     private readonly raw: StackFrame,
     /** Index within the pause's frames array (0 = innermost). */
     public readonly frameIndex: number
@@ -49,10 +52,13 @@ export class PausedStackFrame {
   }
 
   /**
-   * Variables resolved by Rust for this frame.
+   * Variables for this frame, resolved lazily on first access via the host.
    * Each entry has `.name`, `.ty` (type name string), and `.value` (formatted string).
    */
   public variables(): Variable[] {
-    return Array.from(this.raw.variables) as Variable[];
+    if (this._variables === null) {
+      this._variables = this.dbg.getVariablesForFrame(this.frameIndex);
+    }
+    return this._variables;
   }
 }

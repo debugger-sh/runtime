@@ -1,6 +1,6 @@
 import EventEmitter from 'events';
 
-import type { LocationInfo as RustLocation, WorkerOut } from '../../../pkg/runtime';
+import type { LocationInfo as RustLocation, Variable, WorkerOut } from '../../../pkg/runtime';
 import init, { DebugHost } from '../../../pkg/runtime';
 import wasmBinary from '../../../pkg/runtime_bg.wasm';
 import { Internals } from '../internals';
@@ -87,6 +87,20 @@ export class Debugger extends EventEmitter<DebuggerEventMap> {
   public resume(): void {
     Atomics.add(this[Internals].sentinel, 0, 1);
     Atomics.notify(this[Internals].sentinel, 0);
+  }
+
+  /**
+   * Returns variables for the given frame index (0 = innermost). Used for lazy variable
+   * evaluation when a frame is expanded.
+   */
+  public getVariablesForFrame(frameIndex: number): Variable[] {
+    const host = this[Internals].host;
+    if (!host) return [];
+    return Array.from(
+      (
+        host as DebugHost & { get_variables_for_frame(i: number): Variable[] }
+      ).get_variables_for_frame(frameIndex)
+    ) as Variable[];
   }
 
   private addWorker(worker: Worker): void {

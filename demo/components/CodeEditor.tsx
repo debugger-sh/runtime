@@ -138,7 +138,7 @@ export default function CodeEditor() {
         // Ignore abort errors
       });
       rt.fs = { 'main.c': code };
-      rt.debugger.addBreakpoint('11');
+      rt.debugger.addBreakpoint('12');
 
       const dbg = rt.debugger;
       dbg.on('breakpoint', (hit) => {
