@@ -269,7 +269,8 @@ pub async fn extract_tar_gz(data: Vec<u8>) -> Result<mem_fs::FileSystem, std::io
         let abs_path = PathBuf::from(format!("/{}", entry.path()?.to_string_lossy()));
 
         if is_dir {
-            fs.create_dir(&abs_path).expect("Created directory");
+            // in the case that a file is listed before the parent directory
+            create_dir_all(&fs, &abs_path).expect("Created directory");
         } else {
             if let Some(parent) = abs_path.parent() {
                 create_dir_all(&fs, &parent).expect("Created parent directories");

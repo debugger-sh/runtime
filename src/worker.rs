@@ -72,24 +72,25 @@ async fn start(msg: WorkerStart) {
     // Build clang args, conditional on is_debug
     let mut clang_args = vec![
         "-cc1",
+        "-triple",
+        "wasm32-wasip1",
         "-Werror",
         "-emit-obj",
         "-disable-free",
         "-isysroot",
-        "/sys",
+        "/",
         "-internal-isystem",
-        "/sys/include/c++/v1",
+        "/include/c++/v1",
         "-internal-isystem",
-        "/sys/include",
+        "/include",
         "-internal-isystem",
-        "/sys/lib/clang/8.0.1/include",
+        "/include/wasm32-wasip1",
         "-ferror-limit",
         "4",
-        "-fmessage-length",
-        "80",
         "-fcolor-diagnostics",
         "-x",
         "c++",
+        "-std=c++23",
         "/main.c",
     ];
 
@@ -101,8 +102,9 @@ async fn start(msg: WorkerStart) {
     }
 
     exec.step("clang")
-        .binary("https://runno.dev/langs/clang.wasm")
-        .sysroot("https://runno.dev/langs/clang-fs.tar.gz")
+        // from @yowasp
+        .binary("https://fabioibanez.github.io/website/llvm.core.wasm")
+        .sysroot("https://fabioibanez.github.io/website/llvm-resources.tar.gz")
         .fs(Box::new(fs))
         .args(&clang_args)
         .run()
@@ -110,18 +112,18 @@ async fn start(msg: WorkerStart) {
         .expect("Compilation succeeded");
 
     exec.step("wasm-ld")
-        .binary("https://runno.dev/langs/wasm-ld.wasm")
+        .binary("https://fabioibanez.github.io/website/llvm.core.wasm")
         .args(&[
-            "--no-threads",
             "--export-dynamic",
             "-z",
             "stack-size=1048576",
-            "-L/sys/lib/wasm32-wasi",
-            "/sys/lib/wasm32-wasi/crt1.o",
+            "-L/lib/wasm32-wasip1",
+            "/lib/wasm32-wasip1/crt1.o",
             "/main.o",
-            "-lc",
             "-lc++",
             "-lc++abi",
+            "/lib/wasm32-unknown-wasip1/libclang_rt.builtins.a",
+            "-lc",
             "-o",
             "/main.wasm",
         ])
