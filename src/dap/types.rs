@@ -48,3 +48,28 @@ pub enum MessageBody {
         body: EventBody,
     },
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "command", content = "arguments")]
+pub enum RequestCommand {
+    #[serde(rename = "initialize")]
+    Initialize,
+    #[serde(rename = "launch")]
+    Launch,
+    #[serde(rename = "configurationDone")]
+    ConfigurationDone,
+    #[serde(rename = "setBreakpoints")]
+    SetBreakpoints(SetBreakpointsArguments),
+    #[serde(rename = "threads")]
+    Threads,
+    #[serde(rename = "stackTrace")]
+    StackTrace(StackTraceArguments),
+    #[serde(rename = "scopes")]
+    Scopes(ScopesArguments),
+    #[serde(rename = "variables")]
+    Variables(VariablesArguments),
+    #[serde(rename = "continue")]
+    Continue(ContinueArguments),
+    #[serde(rename = "disconnect")]
+    Disconnect,
+}
