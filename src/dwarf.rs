@@ -130,8 +130,16 @@ fn collect_subprograms<R: Reader>(
 
     if tag == gimli::DW_TAG_subprogram {
         if let Some((low_pc, _high_pc)) = get_pc_range(node.entry()) {
+            let name = match node.entry().attr(gimli::DW_AT_name) {
+                Some(attr) => dwarf
+                    .attr_string(unit, attr.value())?
+                    .to_string_lossy()?
+                    .to_string(),
+                None => String::new(),
+            };
             let offset = node.entry().offset().0.into_u64() as usize;
             functions.push(DebugFunction {
+                name,
                 offset,
                 address: low_pc as usize,
                 size: 4,
