@@ -28,7 +28,7 @@ impl Adapter {
     }
 
     #[wasm_bindgen(js_name = "stackTrace")]
-    pub fn stack_trace(&self) -> Result<JsValue, JsError> {
+    pub fn backtrace(&self) -> Result<JsValue, JsError> {
         let sentinel = self.sentinel();
         let sp = sentinel.get_index(3) as u32;
 
