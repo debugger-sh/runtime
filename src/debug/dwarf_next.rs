@@ -16,19 +16,6 @@ pub struct Dwarf {
 }
 
 impl Dwarf {
-    /// Load Dwarf from a WASM binary.
-    pub fn from_wasm(wasm: &[u8]) -> Result<Self> {
-        let mut sections: HashMap<&str, &[u8]> = HashMap::new();
-        for payload in Parser::new(0).parse_all(wasm) {
-            let payload = payload?;
-            if let Payload::CustomSection(reader) = payload {
-                sections.insert(reader.name(), reader.data());
-            }
-        }
-
-        Self::from_sections(&sections)
-    }
-
     /// Load Dwarf from section map
     pub fn from_sections(sections: &HashMap<&str, &[u8]>) -> Result<Self> {
         let sections = DwarfSections::load(|id: SectionId| -> Result<Rc<[u8]>, gimli::Error> {
