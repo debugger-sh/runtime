@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use super::{Error, FnInstrumenter, InstrResult};
 use crate::types::DebugInfo;
 use wasm_encoder::reencode::{self};
@@ -21,12 +23,6 @@ pub struct Instrumenter<'a> {
 
 impl<'a> Instrumenter<'a> {
     pub fn new(info: &'a mut DebugInfo) -> Self {
-        let breakpoints: std::collections::HashMap<usize, usize> = info
-            .locations
-            .iter()
-            .enumerate()
-            .map(|(i, loc)| (loc.address, i))
-            .collect();
         Self {
             info,
             validator: wasmparser::Validator::new(),
@@ -37,7 +33,7 @@ impl<'a> Instrumenter<'a> {
             num_imported_functions: 0,
             num_imported_globals: 0,
             code_section_start: 0,
-            breakpoints,
+            breakpoints: HashMap::new(),
         }
     }
 

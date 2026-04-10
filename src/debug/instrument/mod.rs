@@ -38,8 +38,6 @@ fn parse_debug_info(wasm: &[u8]) -> Result<DebugInfo> {
     }
 
     Ok(DebugInfo {
-        locations: Vec::new(),
-        files: Vec::new(),
         functions: Vec::new(),
         breakpoints: js_sys::SharedArrayBuffer::new(0),
         memory: MemoryDescriptor::new(memory_initial, 16 * memory_initial),

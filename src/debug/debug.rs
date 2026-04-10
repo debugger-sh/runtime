@@ -184,10 +184,6 @@ impl WorkerDebugger {
 
     /// Check if a breakpoint at the given index is enabled
     pub fn bkpt_enabled(&self, index: usize) -> bool {
-        if index > self.info.locations.len() {
-            return false;
-        }
-
         let flags = js_sys::Uint8Array::new_with_byte_offset(
             &self.info.breakpoints,
             BREAKPOINT_PREFIX_BYTES as u32,

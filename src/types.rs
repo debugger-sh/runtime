@@ -6,7 +6,7 @@ use wasm_bindgen::JsValue;
 use wasmer::{MemoryType, Pages};
 use web_sys::DedicatedWorkerGlobalScope;
 
-use crate::debug::dwarf::Dwarf;
+use crate::debug::dwarf::{DieReference, Dwarf};
 
 #[derive(Debug, Tsify, Deserialize)]
 #[serde(untagged)]
@@ -110,10 +110,6 @@ impl MemoryDescriptor {
 /// Debug information parsed from DWARF
 #[derive(Debug, Clone, Tsify, Serialize, Deserialize)]
 pub struct DebugInfo {
-    /// Breakpoint locations (file index, line, col, WASM address).
-    pub locations: Vec<LocationInfo>,
-    /// Deduplicated source filenames; index matches `LocationInfo::file`.
-    pub files: Vec<String>,
     pub functions: Vec<DebugFunction>,
 
     /// SharedArrayBuffer that controls breakpoint operation in the debugger.
@@ -155,8 +151,8 @@ pub enum WasmLocation {
 pub struct DebugFunction {
     /// DW_AT_name from the DWARF
     pub name: String,
-    /// Offset of this function in the DWARF
-    pub offset: usize,
+    /// Index of dwarf unit containing this function
+    pub die_ref: DieReference,
     /// Code section offset of the start of the function
     pub address: usize,
     /// The total size in bytes of the stack frame, including it's 32-bit tag

@@ -1,3 +1,4 @@
+use ::serde::{Deserialize, Serialize};
 use anyhow::Result;
 use gimli::{DwarfSections, EndianRcSlice, LittleEndian, SectionId};
 use std::collections::HashMap;
@@ -14,6 +15,13 @@ pub struct Dwarf {
     /// DWARF sections maintained for serialization.
     /// References same memory as `inner`.
     sections: gimli::DwarfSections<Reader>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct DieReference {
+    unit_index: usize,
+    #[serde(with = "serde::unit_offset")]
+    unit_ofs: gimli::UnitOffset,
 }
 
 impl Clone for Dwarf {
@@ -104,5 +112,25 @@ pub mod serde {
             .map(|(k, v)| (k.as_str(), v.as_slice()))
             .collect();
         super::Dwarf::from_sections(&map).map_err(serde::de::Error::custom)
+    }
+
+    pub mod unit_offset {
+        use gimli::UnitOffset;
+        use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+        pub fn serialize<S>(offset: &UnitOffset, s: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+        {
+            offset.0.serialize(s)
+        }
+
+        pub fn deserialize<'de, D>(d: D) -> Result<UnitOffset, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let n = usize::deserialize(d)?;
+            Ok(UnitOffset(n))
+        }
     }
 }

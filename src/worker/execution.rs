@@ -16,7 +16,6 @@ use wasmer_wasix::{
 use web_sys::DedicatedWorkerGlobalScope;
 
 use crate::debug::WorkerDebugger;
-use crate::debug::dwarf_old::parse_debug_info;
 use crate::debug::instrument::{InstrumenterResult, instrument_wasm};
 use crate::types::{StdoutMode, WorkerOut};
 
