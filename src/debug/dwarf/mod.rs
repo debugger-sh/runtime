@@ -67,7 +67,7 @@ impl Dwarf {
         let inner = sections.borrow(|section| section.clone());
         let units = inner
             .units()
-            .map(|h| Unit::new(inner.unit(h?)?))
+            .map(|h| Unit::new(&inner, inner.unit(h?)?))
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Self {
