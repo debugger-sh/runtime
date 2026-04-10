@@ -1,6 +1,6 @@
 use super::{Error, FnInstrumenter, InstrResult};
 use crate::types::DebugInfo;
-use wasm_encoder::reencode::{self, Reencode};
+use wasm_encoder::reencode::{self};
 
 pub struct Instrumenter<'a> {
     pub info: &'a mut DebugInfo,

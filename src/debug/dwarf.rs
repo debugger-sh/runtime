@@ -7,13 +7,40 @@ use wasmparser::{Parser, Payload};
 /// The reader type we use any time we interface with `gimli`.
 type Reader = EndianRcSlice<LittleEndian>;
 
-#[derive(Clone)]
+#[derive(Debug)]
 pub struct Dwarf {
     /// Provides direct access to `gimli`
     inner: gimli::Dwarf<Reader>,
     /// DWARF sections maintained for serialization.
     /// References same memory as `inner`.
     sections: gimli::DwarfSections<Reader>,
+}
+
+impl Clone for Dwarf {
+    fn clone(&self) -> Self {
+        let sections = gimli::DwarfSections {
+            debug_abbrev: self.sections.debug_abbrev.clone(),
+            debug_addr: self.sections.debug_addr.clone(),
+            debug_aranges: self.sections.debug_aranges.clone(),
+            debug_info: self.sections.debug_info.clone(),
+            debug_line: self.sections.debug_line.clone(),
+            debug_line_str: self.sections.debug_line_str.clone(),
+            debug_macinfo: self.sections.debug_macinfo.clone(),
+            debug_macro: self.sections.debug_macro.clone(),
+            debug_names: self.sections.debug_names.clone(),
+            debug_str: self.sections.debug_str.clone(),
+            debug_str_offsets: self.sections.debug_str_offsets.clone(),
+            debug_types: self.sections.debug_types.clone(),
+            debug_loc: self.sections.debug_loc.clone(),
+            debug_loclists: self.sections.debug_loclists.clone(),
+            debug_ranges: self.sections.debug_ranges.clone(),
+            debug_rnglists: self.sections.debug_rnglists.clone(),
+        };
+
+        let inner = sections.borrow(|s| s.clone());
+
+        Self { inner, sections }
+    }
 }
 
 impl Dwarf {
