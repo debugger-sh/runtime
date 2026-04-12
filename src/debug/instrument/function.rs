@@ -1,5 +1,5 @@
 use super::{InstrResult, Instrumenter};
-use crate::debug::dwarf::Die;
+use crate::debug::dwarf::{Die, get_location, get_variables};
 use crate::debug::instrument::InstrError;
 use crate::types::{DebugFrameEntry, DebugFunction, GlobalAddress, WasmLocation};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -129,9 +129,33 @@ impl<'a, 'b, 'c> FnInstrumenter<'a, 'b, 'c> {
         self.stack_intructions.push(instr_count + 1);
     }
 
-    fn locations_at(&self, pc: GlobalAddress) -> WasmLocations {
-        let fun = self.func().die_ref.deref(&self.instr.info.dwarf);
-        WasmLocations::default()
+    fn locations_at(&self, pc: GlobalAddress) -> InstrResult<WasmLocations> {
+        let fun = self
+            .func()
+            .die_ref
+            .deref(&self.instr.info.dwarf)
+            .map_err(|e| InstrError::UserError(e))?;
+
+        let vars = get_variables(&fun, pc);
+        let mut locs = WasmLocations::default();
+
+        for var in vars {
+            let Some(expr) = get_location(&var, pc) else {
+                continue;
+            };
+
+            for op in expr.operations(fun.ctx().unit.unit().encoding()) {
+                let op = op.map_err(|e| InstrError::UserError(e.into()))?;
+                match op {
+                    gimli::Operation::WasmLocal { index } => locs.locals.insert(index as usize),
+                    gimli::Operation::WasmGlobal { index } => locs.globals.insert(index as usize),
+                    gimli::Operation::WasmStack { index } => locs.operands.insert(index as usize),
+                    _ => true,
+                };
+            }
+        }
+
+        Ok(WasmLocations::default())
     }
 
     fn emit_bkpt(&mut self, bkpt_idx: usize, pc: GlobalAddress) -> InstrResult {
@@ -145,7 +169,7 @@ impl<'a, 'b, 'c> FnInstrumenter<'a, 'b, 'c> {
         // All instrumentation code must have no observable side effects.
         // In particular, all values of locals must be preserved and the
         // state of the operand stack must be preserved.
-        let locs = self.locations_at(pc);
+        let locs = self.locations_at(pc)?;
 
         self.emit_operands(&locs)?;
         self.emit_locals(&locs)?;
