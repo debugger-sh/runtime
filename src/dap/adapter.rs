@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use anyhow::{Context, Result};
+use serde::Serialize;
 use serde_json::{Value, json};
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::prelude::*;
@@ -25,6 +26,30 @@ impl DapState {
 
     fn debugger(&self) -> Option<&Debugger> {
         self.debugger.as_ref()
+    }
+
+    fn handle_initialize(&self) -> Result<Value> {
+        Ok(json!({
+            "supportsConfigurationDoneRequest": true,
+            "supportsStepBack": false,
+        }))
+    }
+
+    fn handle_configuration_done(&self) -> Result<Value> {
+        if let Some(dbg) = self.debugger() {
+            dbg.continue_();
+        }
+        Ok(json!({}))
+    }
+
+    fn handle_set_exception_breakpoints(&self) -> Result<Value> {
+        Ok(json!({ "breakpoints": [] }))
+    }
+
+    fn handle_threads(&self) -> Result<Value> {
+        Ok(json!({
+            "threads": [{ "id": 1, "name": "main" }]
+        }))
     }
 
     fn handle_set_breakpoints(&self, args: &Value) -> Result<Value> {
@@ -59,11 +84,13 @@ impl DapState {
         let stack_frames: Vec<_> = frames
             .iter()
             .map(|f| {
+                let source = f.source.as_ref().map(|p| json!({ "path": p }));
                 json!({
                     "id": f.id,
                     "name": f.name,
                     "line": f.line,
                     "column": f.column,
+                    "source": source,
                 })
             })
             .collect();
@@ -73,7 +100,64 @@ impl DapState {
         }))
     }
 
+    fn handle_scopes(&self, _args: &Value) -> Result<Value> {
+        Ok(json!({
+            "scopes": [{
+                "name": "Locals",
+                "variablesReference": 1,
+                "expensive": false,
+            }]
+        }))
+    }
+
+    fn handle_variables(&self, args: &Value) -> Result<Value> {
+        let reference = args
+            .get("variablesReference")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+
+        if reference != 1 {
+            return Ok(json!({ "variables": [] }));
+        }
+
+        let dbg = self.debugger().context("No debugger attached")?;
+        let vars: Vec<_> = dbg
+            .get_variables()
+            .iter()
+            .map(|v| json!({
+                "name": v.name,
+                "value": v.value,
+                "type": v.r#type,
+                "variablesReference": 0,
+            }))
+            .collect();
+        Ok(json!({ "variables": vars }))
+    }
+
     fn handle_continue(&self) -> Result<Value> {
+        if let Some(dbg) = self.debugger() {
+            dbg.continue_();
+        }
+        Ok(json!({ "allThreadsContinued": true }))
+    }
+
+    // TODO: needs partner to expose step(mode) on Debugger to set sentinel[1] before resuming.
+    // For now these fall through to a plain continue so the program doesn't hang.
+    fn handle_next(&self) -> Result<Value> {
+        if let Some(dbg) = self.debugger() {
+            dbg.continue_();
+        }
+        Ok(json!({}))
+    }
+
+    fn handle_step_in(&self) -> Result<Value> {
+        if let Some(dbg) = self.debugger() {
+            dbg.continue_();
+        }
+        Ok(json!({}))
+    }
+
+    fn handle_step_out(&self) -> Result<Value> {
         if let Some(dbg) = self.debugger() {
             dbg.continue_();
         }
@@ -119,7 +203,8 @@ fn emit_event(state: &Rc<RefCell<DapState>>, event_name: &str, body: Option<Valu
             event: event_name.to_string(),
             body,
         };
-        if let Ok(val) = serde_wasm_bindgen::to_value(&msg) {
+        let ser = serde_wasm_bindgen::Serializer::new().serialize_maps_as_objects(true);
+        if let Ok(val) = msg.serialize(&ser) {
             let _ = callback.call1(&JsValue::NULL, &val);
         }
     }
@@ -146,9 +231,9 @@ impl DapAdapter {
 
     /// Attaches a worker to the adapter.
     ///
-    /// Listens for the worker's `debug` message (containing `DebugInfo`)
-    /// to construct the internal `Debugger`, and for `breakpoint` messages
-    /// to emit DAP `stopped` events.
+    /// Listens for the worker's `debug` message (containing `DebugInfo`) to construct
+    /// the internal `Debugger`, `breakpoint` messages to emit DAP `stopped` events,
+    /// and `stop` messages to emit `terminated`.
     pub fn attach(&self, worker: web_sys::Worker) {
         let state = self.state.clone();
 
@@ -165,12 +250,17 @@ impl DapAdapter {
                         .expect("debug message has info field");
                     let info: DebugInfo = serde_wasm_bindgen::from_value(info_val)
                         .expect("DebugInfo deserialization");
-
                     state.borrow_mut().debugger = Some(Debugger::new(info));
-                    emit_event(&state, "initialized", None);
                 }
                 "breakpoint" => {
-                    emit_event(&state, "stopped", Some(json!({ "reason": "breakpoint" })));
+                    emit_event(&state, "stopped", Some(json!({
+                        "reason": "breakpoint",
+                        "threadId": 1,
+                        "allThreadsStopped": true,
+                    })));
+                }
+                "stop" => {
+                    emit_event(&state, "terminated", Some(json!({ "restart": false })));
                 }
                 _ => {}
             }
@@ -201,19 +291,37 @@ impl DapAdapter {
         };
 
         let args = arguments.unwrap_or(Value::Null);
-        let mut state = self.state.borrow_mut();
-        let rseq = state.next_seq();
 
-        let result = match command.as_str() {
-            "setBreakpoints" => state.handle_set_breakpoints(&args),
-            "stackTrace" => state.handle_stack_trace(),
-            "continue" => state.handle_continue(),
-            other => Err(anyhow::anyhow!("Unknown command: {other}")),
-        };
+        let (rseq, result) = {
+            let mut state = self.state.borrow_mut();
+            let rseq = state.next_seq();
+            let result = match command.as_str() {
+                "initialize" => state.handle_initialize(),
+                "configurationDone" => state.handle_configuration_done(),
+                "setExceptionBreakpoints" => state.handle_set_exception_breakpoints(),
+                "threads" => state.handle_threads(),
+                "setBreakpoints" => state.handle_set_breakpoints(&args),
+                "stackTrace" => state.handle_stack_trace(),
+                "scopes" => state.handle_scopes(&args),
+                "variables" => state.handle_variables(&args),
+                "continue" => state.handle_continue(),
+                "next" => state.handle_next(),
+                "stepIn" => state.handle_step_in(),
+                "stepOut" => state.handle_step_out(),
+                other => Err(anyhow::anyhow!("Unknown command: {other}")),
+            };
+            (rseq, result)
+        }; // borrow_mut dropped here
+
+        // `initialize` response must be followed by an `initialized` event.
+        // Emitted after dropping the borrow so the callback can safely re-enter the adapter.
+        if command == "initialize" && result.is_ok() {
+            emit_event(&self.state, "initialized", None);
+        }
 
         let response = respond(rseq, seq, &command, result);
-
-        serde_wasm_bindgen::to_value(&response).unwrap_or(JsValue::NULL)
+        let ser = serde_wasm_bindgen::Serializer::new().serialize_maps_as_objects(true);
+        response.serialize(&ser).unwrap_or(JsValue::NULL)
     }
 
     /// Registers a callback that receives all DAP events.

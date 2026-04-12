@@ -34,8 +34,8 @@ export class Debugger extends EventEmitter<DebuggerEventMap> {
     this.dap.on(this.onMessage);
   }
 
-  public send(message: unknown) {
-    this.dap.sendMessage(message);
+  public send(message: unknown): unknown {
+    return this.dap.sendMessage(message); // return the response for logging purposes
   }
 
   private attach(worker: Worker) {

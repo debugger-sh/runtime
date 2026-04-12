@@ -1,15 +1,19 @@
 use serde::{Deserialize, Serialize};
-use tsify::Tsify;
 
-#[derive(Clone, Debug, Tsify, Serialize, Deserialize)]
+// ---------------------------------------------------------------------------
+// Internal interface types (shared between DAP adapter and debugger)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct StackFrame {
     pub id: u32,
     pub name: String,
     pub line: u32,
     pub column: u32,
+    pub source: Option<String>,
 }
 
-#[derive(Clone, Debug, Tsify, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Variable {
     pub name: String,
     pub value: String,
@@ -17,8 +21,9 @@ pub struct Variable {
 }
 
 // ---------------------------------------------------------------------------
-// Debug Adapter Types
+// Base Protocol
 // ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ProtocolMessage {

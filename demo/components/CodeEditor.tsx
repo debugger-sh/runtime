@@ -85,6 +85,7 @@ export default function CodeEditor() {
       terminalRef.current?.writeln('Running...');
 
       const rt = await Runtime.create('c');
+      (window as { __rt?: typeof rt }).__rt = rt; // temp: expose for console testing
       runtimeRef.current = rt;
 
       // Set up stdout/stderr streams to write to the terminal

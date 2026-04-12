@@ -55,6 +55,7 @@ impl Debugger {
                 name: die.name().unwrap_or(String::new()),
                 line: 0, // TODO: resolve from DWARF
                 column: 0,
+                source: None,
             });
             pos += func.size as u32;
         }
