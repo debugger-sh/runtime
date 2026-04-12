@@ -238,7 +238,7 @@ impl<'a> reencode::Reencode for Instrumenter<'a> {
             .info
             .functions
             .iter()
-            .position(|f| f.address == code_ofs);
+            .position(|f| f.address == code_ofs.into());
 
         let Some(debug_func_idx) = debug_func_idx else {
             // If this is not a function with a corresponding DWARF entry,

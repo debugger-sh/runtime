@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 
+use crate::types::GlobalAddress;
 use crate::util::{warning, weak_error};
 
 use super::{Dwarf, R, Unit};
@@ -72,10 +73,10 @@ impl<'a> Die<'a> {
         self.attr_to_string(gimli::DW_AT_name)
     }
 
-    pub fn low_pc(&self) -> Option<usize> {
+    pub fn low_pc(&self) -> Option<GlobalAddress> {
         let high_pc = self.attr(gimli::DW_AT_low_pc)?;
         match high_pc.value() {
-            gimli::AttributeValue::Addr(pc) => Some(pc as usize),
+            gimli::AttributeValue::Addr(pc) => Some(GlobalAddress(pc)),
             _ => {
                 warning!("Die {:?} has invalid low_pc", self.offset());
                 return None;
@@ -83,10 +84,10 @@ impl<'a> Die<'a> {
         }
     }
 
-    pub fn high_pc(&self) -> Option<usize> {
+    pub fn high_pc(&self) -> Option<GlobalAddress> {
         let pc = self.attr(gimli::DW_AT_high_pc)?;
         match pc.value() {
-            gimli::AttributeValue::Addr(pc) => Some(pc as usize),
+            gimli::AttributeValue::Addr(pc) => Some(GlobalAddress(pc)),
             _ => {
                 warning!("Die {:?} has invalid low_pc", self.offset());
                 return None;

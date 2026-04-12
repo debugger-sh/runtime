@@ -1,5 +1,6 @@
 use crate::{
     debug::dwarf::{Die, Visit},
+    types::GlobalAddress,
     util::weak_error,
 };
 use gimli::read::Expression;
@@ -10,7 +11,7 @@ use super::R;
 ///
 /// `die` should be a reference to a subprogram,
 /// and `pc` should be an offset within the wasm code segment.
-pub fn get_variables<'a>(die: &Die<'a>, pc: usize) -> Vec<Die<'a>> {
+pub fn get_variables<'a>(die: &Die<'a>, pc: GlobalAddress) -> Vec<Die<'a>> {
     assert!(
         die.tag() == gimli::DW_TAG_subprogram,
         "get_variables requires subprogram die"
@@ -48,13 +49,13 @@ pub fn get_variables<'a>(die: &Die<'a>, pc: usize) -> Vec<Die<'a>> {
 }
 
 /// Gets the location expression for a variable at the given PC
-pub fn get_location(die: &Die<'_>, pc: usize) -> Option<Expression<R>> {
+pub fn get_location(die: &Die<'_>, pc: GlobalAddress) -> Option<Expression<R>> {
     let Some(attr) = die.attr_value(gimli::DW_AT_location) else {
         return None;
     };
 
     let unit = die.ctx().unit_ref();
-    let addr = pc as u64;
+    let addr = pc.0;
 
     match attr {
         gimli::AttributeValue::Exprloc(expr) => Some(expr),

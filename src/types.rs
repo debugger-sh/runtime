@@ -8,6 +8,31 @@ use web_sys::DedicatedWorkerGlobalScope;
 
 use crate::debug::dwarf::{DieReference, Dwarf};
 
+/// Byte offset in the WASM code section
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Tsify, Serialize, Deserialize,
+)]
+#[serde(transparent)]
+pub struct GlobalAddress(pub u64);
+
+impl From<u64> for GlobalAddress {
+    fn from(v: u64) -> Self {
+        Self(v)
+    }
+}
+
+impl From<GlobalAddress> for u64 {
+    fn from(a: GlobalAddress) -> Self {
+        a.0
+    }
+}
+
+impl From<usize> for GlobalAddress {
+    fn from(v: usize) -> Self {
+        Self(v as u64)
+    }
+}
+
 #[derive(Debug, Tsify, Deserialize)]
 #[serde(untagged)]
 pub enum FsNode {
@@ -149,7 +174,7 @@ pub enum WasmLocation {
 
 #[derive(Debug, Clone, Tsify, Serialize, Deserialize)]
 pub struct DebugFunction {
-    pub address: usize,
+    pub address: GlobalAddress,
     /// Reference to dwarf die for this function
     pub die_ref: DieReference,
     /// The total size in bytes of the stack frame, including it's 32-bit tag
