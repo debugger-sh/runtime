@@ -91,7 +91,7 @@ impl Unit {
             .current()
             .ok_or(gimli::Error::MissingUnitDie)?
             .clone();
-        Ok(Die::new(&dwarf.inner, &self.unit, die))
+        Ok(Die::new(self.unit.unit_ref(&dwarf.inner), die))
     }
 
     pub fn unit(&self) -> &gimli::Unit<R> {
