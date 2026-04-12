@@ -1,8 +1,10 @@
 pub mod die;
 pub mod serde;
 pub mod unit;
+pub mod variables;
 pub use die::*;
 pub use unit::*;
+pub use variables::*;
 
 use anyhow::Result;
 use gimli::{DwarfSections, EndianRcSlice, LittleEndian, SectionId};

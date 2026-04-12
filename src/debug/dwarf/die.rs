@@ -3,7 +3,7 @@ use std::collections::VecDeque;
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 
-use crate::util::weak_error;
+use crate::util::{warning, weak_error};
 
 use super::{Dwarf, R, Unit};
 use gimli::Reader;
@@ -50,13 +50,48 @@ pub struct Die<'a> {
     die: gimli::DebuggingInformationEntry<R>,
 }
 
+impl<'a> std::ops::Deref for Die<'a> {
+    type Target = gimli::DebuggingInformationEntry<R>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.die
+    }
+}
+
 impl<'a> Die<'a> {
     pub(crate) fn new(ctx: DerefContext<'a>, die: gimli::DebuggingInformationEntry<R>) -> Self {
         Self { ctx, die }
     }
 
+    #[inline]
+    pub fn ctx(&self) -> &DerefContext<'_> {
+        &self.ctx
+    }
+
     pub fn name(&self) -> Option<String> {
         self.attr_to_string(gimli::DW_AT_name)
+    }
+
+    pub fn low_pc(&self) -> Option<usize> {
+        let high_pc = self.attr(gimli::DW_AT_low_pc)?;
+        match high_pc.value() {
+            gimli::AttributeValue::Addr(pc) => Some(pc as usize),
+            _ => {
+                warning!("Die {:?} has invalid low_pc", self.offset());
+                return None;
+            }
+        }
+    }
+
+    pub fn high_pc(&self) -> Option<usize> {
+        let pc = self.attr(gimli::DW_AT_high_pc)?;
+        match pc.value() {
+            gimli::AttributeValue::Addr(pc) => Some(pc as usize),
+            _ => {
+                warning!("Die {:?} has invalid low_pc", self.offset());
+                return None;
+            }
+        }
     }
 
     pub fn die(&self) -> &gimli::DebuggingInformationEntry<R> {
@@ -72,8 +107,7 @@ impl<'a> Die<'a> {
 
     pub fn attr_to_string(&self, attr: gimli::DwAt) -> Option<String> {
         weak_error!(
-            self.die
-                .attr(attr)
+            self.attr(attr)
                 .and_then(|attr| self.ctx.unit_ref().attr_string(attr.value()).ok())
                 .map(|l| l.to_string_lossy().map(|s| s.to_string()))
                 .transpose()
@@ -83,7 +117,7 @@ impl<'a> Die<'a> {
 
     /// Loop through child DIEs until a value is found, returning it (if any)
     pub fn find_children<T>(&self, mut f: impl FnMut(Die<'a>) -> Option<T>) -> Option<T> {
-        let mut tree = weak_error!(self.ctx.unit_ref().entries_tree(Some(self.die.offset())))?;
+        let mut tree = weak_error!(self.ctx.unit_ref().entries_tree(Some(self.offset())))?;
 
         let root = weak_error!(tree.root())?;
         let mut children = root.children();
@@ -118,7 +152,10 @@ impl<'a> Die<'a> {
         result
     }
 
-    pub fn traverse(&self, mut f: impl FnMut(Die) -> Visit) {
+    /// Recursively traverses the tree, including this node.
+    ///
+    /// Accepts a callback `f` whose return value will control traversal
+    pub fn traverse(&self, mut f: impl FnMut(Die<'a>) -> Visit) {
         let mut queue = VecDeque::from([self.die.offset()]);
 
         while let Some(offset) = queue.pop_front() {
@@ -130,6 +167,12 @@ impl<'a> Die<'a> {
             let Some(root) = weak_error!(tree.root()) else {
                 return;
             };
+
+            match f(Die::new(self.ctx.clone(), root.entry().clone())) {
+                Visit::Continue => {}
+                Visit::SkipChildren => continue,
+                Visit::Break => return,
+            }
 
             let mut children = root.children();
             while let Some(Some(child)) = weak_error!(children.next()) {

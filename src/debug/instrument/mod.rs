@@ -60,24 +60,16 @@ fn parse_debug_functions(dwarf: &Dwarf) -> Vec<DebugFunction> {
             };
 
             root.collect_children(|child| {
-                if child.die().tag() != gimli::DW_TAG_subprogram {
+                if child.tag() != gimli::DW_TAG_subprogram {
                     return None;
                 }
 
-                let Some(low_pc) = child.die().attr(gimli::DW_AT_low_pc) else {
+                let Some(low_pc) = child.low_pc() else {
                     return None;
                 };
 
-                let low_pc = match low_pc.value() {
-                    gimli::AttributeValue::Addr(pc) => pc,
-                    _ => {
-                        warning!("Function {:?} has invalid low_pc", child.name());
-                        return None;
-                    }
-                };
-
                 Some(DebugFunction {
-                    address: low_pc as usize,
+                    address: low_pc,
                     die_ref: child.die_ref(),
                     size: 0,
                     layout: Vec::default(),
