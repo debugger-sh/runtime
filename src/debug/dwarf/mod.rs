@@ -9,6 +9,8 @@ use gimli::{DwarfSections, EndianRcSlice, LittleEndian, SectionId};
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::util::weak_error;
+
 /// The reader type we use any time we interface with `gimli`.
 type R = EndianRcSlice<LittleEndian>;
 
@@ -63,16 +65,23 @@ impl Dwarf {
         })?;
 
         let inner = sections.borrow(|section| section.clone());
+
+        let mut parser = UnitParser::new(&inner);
         let units = inner
             .units()
-            .map(|h| Unit::new(&inner, inner.unit(h?)?))
-            .collect::<Result<Vec<_>, _>>()?;
+            .map(|header| parser.parse(weak_error!(header)?))
+            .flatten()
+            .collect();
 
         Ok(Self {
             inner,
             sections,
             units,
         })
+    }
+
+    pub fn units(&self) -> &[Unit] {
+        &self.units
     }
 
     /// Gets all locations across all compilation units

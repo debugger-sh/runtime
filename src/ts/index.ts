@@ -125,6 +125,7 @@ export class Runtime {
         });
 
         worker.addEventListener('message', (message: MessageEvent<WorkerOut>) => {
+          console.log(message.data);
           if (message.data.type === 'stop') resolve();
           if (message.data.type === 'download') {
             const blob = new Blob([new Uint8Array(message.data.data)]);

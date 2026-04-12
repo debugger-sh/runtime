@@ -3,16 +3,19 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use crate::debug::dwarf::{Die, Dwarf};
+use crate::{
+    debug::dwarf::{DerefContext, Die, Dwarf},
+    util::weak_error,
+};
 
 use super::R;
-use anyhow::Result;
-use gimli::Reader;
+use gimli::{Reader, UnitHeader};
 
 #[derive(Debug)]
 pub struct Unit {
     /// Provides direct access to `gimli`
     unit: gimli::Unit<R>,
+    index: usize,
     files: Vec<PathBuf>,
     /// Information about the lines in this unit.
     /// Each of these is theoretically a breakable program statement
@@ -66,21 +69,10 @@ impl Unit {
 
         Self {
             unit,
+            index: self.index.clone(),
             files: self.files.clone(),
             lines: self.lines.clone(),
         }
-    }
-
-    pub fn new(dwarf: &gimli::Dwarf<R>, unit: gimli::Unit<R>) -> Result<Unit> {
-        let mut files = vec![];
-        let mut lines = vec![];
-        if let Some(ref lp) = unit.line_program {
-            let mut rows = lp.clone().rows();
-            lines = parse_lines(&mut rows)?;
-            files = parse_files(dwarf, &unit, &rows)?;
-        }
-
-        Ok(Unit { unit, files, lines })
     }
 
     /// Gets the root DIE for this unit
@@ -91,11 +83,15 @@ impl Unit {
             .current()
             .ok_or(gimli::Error::MissingUnitDie)?
             .clone();
-        Ok(Die::new(self.unit.unit_ref(&dwarf.inner), die))
+        Ok(Die::new(DerefContext::new(dwarf, self), die))
     }
 
     pub fn unit(&self) -> &gimli::Unit<R> {
         &self.unit
+    }
+
+    pub fn index(&self) -> usize {
+        self.index
     }
 
     pub fn locations(&self) -> impl Iterator<Item = Location<'_>> {
@@ -103,6 +99,42 @@ impl Unit {
             unit: self,
             line: l,
             file: &self.files[l.file_index as usize],
+        })
+    }
+}
+
+pub struct UnitParser<'a> {
+    dwarf: &'a gimli::Dwarf<R>,
+    unit_index: usize,
+}
+
+impl<'a> UnitParser<'a> {
+    pub fn new(dwarf: &'a gimli::Dwarf<R>) -> Self {
+        UnitParser {
+            dwarf,
+            unit_index: 0,
+        }
+    }
+
+    pub fn parse(&mut self, header: UnitHeader<R>) -> Option<Unit> {
+        let unit = weak_error!(self.dwarf.unit(header))?;
+
+        let mut files = vec![];
+        let mut lines = vec![];
+        if let Some(ref lp) = unit.line_program {
+            let mut rows = lp.clone().rows();
+            lines = weak_error!(parse_lines(&mut rows))?;
+            files = weak_error!(parse_files(self.dwarf, &unit, &rows))?;
+        }
+
+        let index = self.unit_index;
+        self.unit_index += 1;
+
+        Some(Unit {
+            unit,
+            index,
+            files,
+            lines,
         })
     }
 }

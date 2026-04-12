@@ -4,8 +4,10 @@ pub mod function;
 pub use encoder::*;
 pub use function::*;
 
+use crate::debug::BREAKPOINT_PREFIX_BYTES;
 use crate::debug::dwarf::Dwarf;
-use crate::types::{DebugInfo, MemoryDescriptor};
+use crate::types::{DebugFunction, DebugInfo, MemoryDescriptor};
+use crate::util::{warning, weak_error};
 use anyhow::Result;
 use std::collections::HashMap;
 use wasm_encoder::reencode;
@@ -36,13 +38,53 @@ fn parse_debug_info(wasm: &[u8]) -> Result<DebugInfo> {
         }
     }
 
+    let dwarf = Dwarf::from_sections(&sections)?;
+    let nlocs = dwarf.locations().count();
+
     Ok(DebugInfo {
-        functions: Vec::new(),
-        breakpoints: js_sys::SharedArrayBuffer::new(0),
+        functions: parse_debug_functions(&dwarf),
+        breakpoints: js_sys::SharedArrayBuffer::new((BREAKPOINT_PREFIX_BYTES + nlocs) as u32),
         memory: MemoryDescriptor::new(memory_initial, 16 * memory_initial),
         stack: MemoryDescriptor::new(16, 16),
-        dwarf: Dwarf::from_sections(&sections)?,
+        dwarf,
     })
+}
+
+fn parse_debug_functions(dwarf: &Dwarf) -> Vec<DebugFunction> {
+    dwarf
+        .units()
+        .iter()
+        .flat_map(|unit| {
+            let Some(root) = weak_error!(unit.root(dwarf)) else {
+                return Vec::new();
+            };
+
+            root.collect_children(|child| {
+                if child.die().tag() != gimli::DW_TAG_subprogram {
+                    return None;
+                }
+
+                let Some(low_pc) = child.die().attr(gimli::DW_AT_low_pc) else {
+                    return None;
+                };
+
+                let low_pc = match low_pc.value() {
+                    gimli::AttributeValue::Addr(pc) => pc,
+                    _ => {
+                        warning!("Function {:?} has invalid low_pc", child.name());
+                        return None;
+                    }
+                };
+
+                Some(DebugFunction {
+                    address: low_pc as usize,
+                    die_ref: child.die_ref(),
+                    size: 0,
+                    layout: Vec::default(),
+                })
+            })
+        })
+        .collect()
 }
 
 pub struct InstrumenterResult {
