@@ -1,24 +1,9 @@
 use serde::{Deserialize, Serialize};
-use tsify::Tsify;
-
-#[derive(Clone, Debug, Tsify, Serialize, Deserialize)]
-pub struct StackFrame {
-    pub id: u32,
-    pub name: String,
-    pub line: u32,
-    pub column: u32,
-}
-
-#[derive(Clone, Debug, Tsify, Serialize, Deserialize)]
-pub struct Variable {
-    pub name: String,
-    pub value: String,
-    pub r#type: Option<String>,
-}
 
 // ---------------------------------------------------------------------------
-// Debug Adapter Types
+// Base Protocol
 // ---------------------------------------------------------------------------
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum ProtocolMessage {

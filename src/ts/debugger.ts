@@ -8,7 +8,7 @@ export type LocationInfo = Omit<RustLocation, 'file'> & {
 };
 
 type DebuggerEventMap = {
-  dap: [unknown];
+  event: [unknown];
 };
 
 export class Debugger extends EventEmitter<DebuggerEventMap> {
@@ -34,8 +34,9 @@ export class Debugger extends EventEmitter<DebuggerEventMap> {
     this.dap.on(this.onMessage);
   }
 
-  public send(message: unknown) {
-    this.dap.sendMessage(message);
+  public send(message: unknown): unknown {
+    // return the response from the DAP adapter. This is sync. DAP events are async and emitted through the on('event') listener.
+    return this.dap.sendMessage(message);
   }
 
   private attach(worker: Worker) {
@@ -43,6 +44,6 @@ export class Debugger extends EventEmitter<DebuggerEventMap> {
   }
 
   private onMessage(message: unknown) {
-    this.emit('dap', message);
+    this.emit('event', message);
   }
 }

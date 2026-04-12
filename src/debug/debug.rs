@@ -1,6 +1,22 @@
-use crate::dap::types::{StackFrame, Variable};
 use crate::types::DebugInfo;
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StackFrame {
+    pub id: u32,
+    pub name: String,
+    pub line: u32,
+    pub column: u32,
+    pub source: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Variable {
+    pub name: String,
+    pub value: String,
+    pub r#type: Option<String>,
+}
 
 pub const BREAKPOINT_PREFIX_BYTES: usize = 16;
 
@@ -55,6 +71,7 @@ impl Debugger {
                 name: die.name().unwrap_or(String::new()),
                 line: 0, // TODO: resolve from DWARF
                 column: 0,
+                source: None,
             });
             pos += func.size as u32;
         }
@@ -68,7 +85,7 @@ impl Debugger {
         Vec::new() // TODO
     }
 
-    pub fn get_variables(&self) -> Vec<Variable> {
+    pub fn get_variables(&self, _frame_id: u32) -> Vec<Variable> {
         Vec::new() // TODO: resolve variables from debug stack + DWARF
     }
 
