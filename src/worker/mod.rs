@@ -6,6 +6,7 @@ use web_sys::{DedicatedWorkerGlobalScope, MessageEvent};
 
 use crate::types::{FsNode, WorkerOut, WorkerStart};
 
+mod debuggee;
 mod execution;
 mod io;
 mod runtime;
