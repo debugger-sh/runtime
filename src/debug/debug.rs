@@ -1,6 +1,22 @@
-use crate::dap::types::{StackFrame, Variable};
 use crate::types::DebugInfo;
+use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StackFrame {
+    pub id: u32,
+    pub name: String,
+    pub line: u32,
+    pub column: u32,
+    pub source: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Variable {
+    pub name: String,
+    pub value: String,
+    pub r#type: Option<String>,
+}
 
 pub const BREAKPOINT_PREFIX_BYTES: usize = 16;
 
