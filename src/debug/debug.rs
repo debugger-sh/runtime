@@ -1,4 +1,6 @@
+use crate::debug::dwarf::{get_location, get_variables as dwarf_get_variables};
 use crate::types::{DebugInfo, GlobalAddress};
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
 
@@ -73,12 +75,84 @@ impl Debugger {
 
     /// Replaces breakpoints for the given source file.
     /// Returns a list of `(line, verified)` pairs.
-    pub fn set_breakpoints(&self, file: &str, lines: &[i64]) -> Vec<(i64, bool)> {
+    pub fn set_breakpoints(&self, _file: &str, _lines: &[i64]) -> Vec<(i64, bool)> {
         Vec::new() // TODO
     }
 
-    pub fn get_variables(&self, _frame_id: u32) -> Vec<Variable> {
-        Vec::new() // TODO: resolve variables from debug stack + DWARF
+    /// Walks the debug stack to the Nth frame and returns (position, pc, func).
+    fn frame_at(
+        &self,
+        frame_id: u32,
+    ) -> Option<(u32, GlobalAddress, &crate::types::DebugFunction)> {
+        let (view, sp, stack_top) = self.stack_view();
+        let mut pos = sp;
+
+        for _ in 0..frame_id {
+            if pos >= stack_top {
+                return None;
+            }
+            let pc = GlobalAddress(view.get_uint32_endian(pos as usize, true) as u64);
+            let func = self.info.fn_at(pc)?;
+            pos += func.size as u32;
+        }
+
+        if pos >= stack_top {
+            return None;
+        }
+        let pc = GlobalAddress(view.get_uint32_endian(pos as usize, true) as u64);
+        let func = self.info.fn_at(pc)?;
+        Some((pos, pc, func))
+    }
+
+    pub fn get_variables(&self, frame_id: u32) -> Vec<Variable> {
+        let Some((pos, pc, func)) = self.frame_at(frame_id) else {
+            return Vec::new();
+        };
+        let Ok(die) = func.die_ref.deref(&self.info.dwarf) else {
+            return Vec::new();
+        };
+
+        let (view, _, _) = self.stack_view();
+        let var_dies = dwarf_get_variables(&die, pc);
+        let mut variables = Vec::new();
+
+        for var_die in &var_dies {
+            let name = var_die.name().unwrap_or_default();
+            let Some(expr) = get_location(var_die, pc) else {
+                continue;
+            };
+
+            let encoding = die.ctx().unit.unit().encoding();
+            for op in expr.operations(encoding) {
+                let Ok(op) = op else { continue };
+                let wasm_loc = match op {
+                    gimli::Operation::WasmLocal { index } => {
+                        crate::types::WasmLocation::Local(index as usize)
+                    }
+                    gimli::Operation::WasmGlobal { index } => {
+                        crate::types::WasmLocation::Global(index as usize)
+                    }
+                    gimli::Operation::WasmStack { index } => {
+                        crate::types::WasmLocation::Operand(index as usize)
+                    }
+                    _ => continue,
+                };
+
+                let Some(entry) = func.layout.iter().find(|e| e.location == wasm_loc) else {
+                    continue;
+                };
+                let value = view.get_float64_endian((pos as usize) + entry.offset, true);
+
+                variables.push(Variable {
+                    name,
+                    value: format!("{value}"),
+                    r#type: None,
+                });
+                break;
+            }
+        }
+
+        variables
     }
 
     /// Resumes the worker by signaling through the SAB.
