@@ -98,6 +98,11 @@ impl<'a, 'b, 'c> FnInstrumenter<'a, 'b, 'c> {
         &mut self.instr.info.functions[self.func_idx]
     }
 
+    fn emit_op(&mut self, op: wasmparser::Operator<'c>) -> InstrResult {
+        self.instructions.push(self.instr.instruction(op)?);
+        Ok(())
+    }
+
     fn emit_header(&mut self) {
         let instr_count = self.instructions.len();
         let frame_size = self.func_mut().size;
@@ -106,15 +111,30 @@ impl<'a, 'b, 'c> FnInstrumenter<'a, 'b, 'c> {
             Instruction::I32Const(frame_size as i32),
             Instruction::I32Sub,
             Instruction::GlobalSet(self.instr.sp_gl_index),
-            Instruction::GlobalGet(self.instr.sp_gl_index),
-            Instruction::I32Const(self.func_idx as i32),
-            Instruction::I32Store(MemArg {
-                offset: 0,
-                align: 2,
-                memory_index: self.instr.stack_mem_index,
-            }),
         ]);
         self.stack_intructions.push(instr_count + 1);
+    }
+
+    fn emit_footer(&mut self) {
+        let instr_count = self.instructions.len();
+        let frame_size = self.func_mut().size;
+        self.instructions.extend([
+            Instruction::GlobalGet(self.instr.sp_gl_index),
+            Instruction::I32Const(frame_size as i32),
+            Instruction::I32Add,
+            Instruction::GlobalSet(self.instr.sp_gl_index),
+        ]);
+        self.stack_intructions.push(instr_count + 1);
+    }
+
+    fn emit_call(&mut self, pc: GlobalAddress, op: wasmparser::Operator<'c>) -> InstrResult {
+        self.instructions.extend([
+            Instruction::GlobalGet(self.instr.sp_gl_index),
+            Instruction::I32Const(pc.0 as i32),
+        ]);
+        self.emit_store(ValType::I32, 0);
+        self.emit_op(op)?;
+        Ok(())
     }
 
     fn locations_at(&self, pc: GlobalAddress) -> InstrResult<WasmLocations> {
@@ -337,18 +357,6 @@ impl<'a, 'b, 'c> FnInstrumenter<'a, 'b, 'c> {
         });
     }
 
-    fn emit_footer(&mut self) {
-        let instr_count = self.instructions.len();
-        let frame_size = self.func_mut().size;
-        self.instructions.extend([
-            Instruction::GlobalGet(self.instr.sp_gl_index),
-            Instruction::I32Const(frame_size as i32),
-            Instruction::I32Add,
-            Instruction::GlobalSet(self.instr.sp_gl_index),
-        ]);
-        self.stack_intructions.push(instr_count + 1);
-    }
-
     pub fn instrument(mut self) -> InstrResult<wasm_encoder::Function> {
         // Clear the stack frame for this function
         // This is a safety check to ensure we always start instrumentation at a known state.
@@ -363,20 +371,20 @@ impl<'a, 'b, 'c> FnInstrumenter<'a, 'b, 'c> {
         let body_rel_start = self.instr.code_ofs(self.func_body.range().start);
         let first_instr_rel = self.instr.code_ofs(reader.original_position());
 
-        for code_ofs in body_rel_start.0..first_instr_rel.0 {
-            let code_ofs = GlobalAddress(code_ofs);
-            let Some(bkpt_idx) = self.instr.breakpoints.get(&code_ofs).copied() else {
+        for pc in body_rel_start.0..first_instr_rel.0 {
+            let pc = GlobalAddress(pc);
+            let Some(bkpt_idx) = self.instr.breakpoints.get(&pc).copied() else {
                 continue;
             };
-            self.emit_bkpt(bkpt_idx, code_ofs)?;
+            self.emit_bkpt(bkpt_idx, pc)?;
         }
 
         while !reader.eof() {
             let (op, binary_ofs) = reader.read_with_offset().map_err(reencode::Error::from)?;
-            let code_ofs = self.instr.code_ofs(binary_ofs);
+            let pc = self.instr.code_ofs(binary_ofs);
 
-            if let Some(&bkpt_idx) = self.instr.breakpoints.get(&code_ofs) {
-                self.emit_bkpt(bkpt_idx, code_ofs)?;
+            if let Some(&bkpt_idx) = self.instr.breakpoints.get(&pc) {
+                self.emit_bkpt(bkpt_idx, pc)?;
             }
 
             // Pass this operator to the wasmparser validator. It will internally
@@ -390,47 +398,45 @@ impl<'a, 'b, 'c> FnInstrumenter<'a, 'b, 'c> {
             self.validator.op(binary_ofs, &op)?;
 
             match op {
+                wasmparser::Operator::Call { .. } => {
+                    self.emit_call(pc, op)?;
+                }
                 wasmparser::Operator::Return => {
                     self.emit_footer();
-                    self.instructions.push(Instruction::Return);
+                    self.emit_op(wasmparser::Operator::Return)?;
                 }
                 wasmparser::Operator::ReturnCall { function_index } => {
-                    self.instructions.push(
-                        self.instr
-                            .instruction(wasmparser::Operator::Call { function_index })?,
-                    );
+                    self.emit_call(pc, wasmparser::Operator::Call { function_index })?;
                     self.emit_footer();
-                    self.instructions.push(Instruction::Return);
+                    self.emit_op(wasmparser::Operator::Return)?;
                 }
                 wasmparser::Operator::ReturnCallIndirect {
                     type_index,
                     table_index,
                 } => {
-                    self.instructions.push(self.instr.instruction(
+                    self.emit_call(
+                        pc,
                         wasmparser::Operator::CallIndirect {
                             type_index,
                             table_index,
                         },
-                    )?);
+                    )?;
                     self.emit_footer();
-                    self.instructions.push(Instruction::Return);
+                    self.emit_op(wasmparser::Operator::Return)?;
                 }
                 wasmparser::Operator::ReturnCallRef { type_index } => {
-                    self.instructions.push(
-                        self.instr
-                            .instruction(wasmparser::Operator::CallRef { type_index })?,
-                    );
+                    self.emit_call(pc, wasmparser::Operator::CallRef { type_index })?;
                     self.emit_footer();
-                    self.instructions.push(Instruction::Return);
+                    self.emit_op(wasmparser::Operator::Return)?;
                 }
                 wasmparser::Operator::End => {
                     if reader.eof() {
                         self.emit_footer();
                     }
-                    self.instructions.push(self.instr.instruction(op)?);
+                    self.emit_op(op)?;
                 }
                 _ => {
-                    self.instructions.push(self.instr.instruction(op)?);
+                    self.emit_op(op)?;
                 }
             }
         }
