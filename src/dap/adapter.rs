@@ -18,8 +18,8 @@ impl ScopeMap {
         self.next_ref
     }
 
-    fn get(&self, reference: i64) -> Option<&ScopeEntry> {
-        self.entries.get(&reference)
+    fn get(&self, reference: i64) -> Option<ScopeEntry> {
+        self.entries.get(&reference).copied()
     }
 
     fn clear(&mut self) {
@@ -129,12 +129,9 @@ impl DapState {
         }))
     }
 
-    // TODO: possibly have seperate scope for different variable types, depending on what Fabio's get_variables does.
-    fn handle_scopes(&self, args: &Value) -> Result<Value> {
-        let frame_id = args.get("frameId").and_then(|v| v.as_i64()).unwrap_or(0);
-        // Encode frame_id into variablesReference: frame 0 → ref 1, frame 1 → ref 2, …
-        // (0 means "no children" in DAP, so we offset by 1)
-        let variables_reference = frame_id + 1;
+    fn handle_scopes(&mut self, args: &Value) -> Result<Value> {
+        let frame_id = args.get("frameId").and_then(|v| v.as_i64()).unwrap_or(0) as u32;
+        let variables_reference = self.scopes.allocate(ScopeEntry::Frame { frame_id });
         Ok(json!({
             "scopes": [{
                 "name": "Locals",
@@ -144,33 +141,35 @@ impl DapState {
         }))
     }
 
-    // TODO: this currently returns all variables in a single "Locals" scope. We might want to split into different scopes (e.g. Locals, Globals, etc) depending on what Fabio provides.
     fn handle_variables(&self, args: &Value) -> Result<Value> {
         let reference = args
             .get("variablesReference")
             .and_then(|v| v.as_i64())
             .unwrap_or(0);
 
-        // this means the request is for variables in a scope that has no children (e.g. an optimized-out variable, or a scope that doesn't exist for some reason), so we return an empty list.
-        if reference < 1 {
-            return Ok(json!({ "variables": [] }));
-        }
+        let entry = self
+            .scopes
+            .get(reference)
+            .context("Unknown variablesReference")?;
 
-        let frame_id = (reference - 1) as u32;
-        let dbg = self.debugger().context("No debugger attached")?;
-        let vars: Vec<_> = dbg
-            .get_variables(frame_id)
-            .iter()
-            .map(|v| {
-                json!({
-                    "name": v.name,
-                    "value": v.value,
-                    "type": v.r#type,
-                    "variablesReference": 0,
-                })
-            })
-            .collect();
-        Ok(json!({ "variables": vars }))
+        match entry {
+            ScopeEntry::Frame { frame_id } => {
+                let dbg = self.debugger().context("No debugger attached")?;
+                let vars: Vec<_> = dbg
+                    .get_variables(frame_id)
+                    .iter()
+                    .map(|v| {
+                        json!({
+                            "name": v.name,
+                            "value": v.value,
+                            "type": v.r#type,
+                            "variablesReference": 0,
+                        })
+                    })
+                    .collect();
+                Ok(json!({ "variables": vars }))
+            }
+        }
     }
 
     fn handle_continue(&self) -> Result<Value> {

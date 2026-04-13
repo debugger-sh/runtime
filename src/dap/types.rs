@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+#[derive(Clone, Copy)]
 pub enum ScopeEntry {
     Frame { frame_id: u32 },
 }
