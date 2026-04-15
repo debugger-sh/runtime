@@ -1,4 +1,4 @@
-use crate::debug::dwarf::{get_location, get_variables as dwarf_get_variables};
+use crate::debug::dwarf::{Value, get_location, get_variables as dwarf_get_variables};
 use crate::types::{DebugInfo, GlobalAddress};
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -145,7 +145,6 @@ impl Debugger {
                 variables.push(Variable {
                     name,
                     value: format!("{value}"),
-                    r#type: None,
                 });
                 break;
             }
