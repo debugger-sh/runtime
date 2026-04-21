@@ -28,12 +28,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "23.x"
+          node-version: '23.x'
           cache: npm
-          registry-url: "https://registry.npmjs.org"
+          registry-url: 'https://registry.npmjs.org'
 
       - run: npm ci
-
       - run: echo "cur_version=$(jq -r .version package.json)" >> $GITHUB_ENV
       - run: echo "prev_version=$(npm view . version 2>/dev/null || echo '0.0.0')" >> $GITHUB_ENV
 
@@ -46,5 +45,3 @@ jobs:
           npm publish --provenance --verbose --access public
           git tag v${{ env.cur_version }}
           git push origin v${{ env.cur_version }}
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NODE_AUTH_TOKEN }}
