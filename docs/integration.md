@@ -7,13 +7,13 @@ This guide is for teams building an IDE or editor on top of this runtime. It cov
 ## Installation
 
 ```sh
-npm install runtime
+npm install @jtrb/runtime
 ```
 
 The package ships a WebAssembly binary and TypeScript bindings. Initialize it once before use:
 
 ```ts
-import { Runtime } from 'runtime';
+import { Runtime } from '@jtrb/runtime';
 
 const rt = await Runtime.create('c');
 ```
