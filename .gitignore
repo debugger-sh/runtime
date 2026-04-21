@@ -21,6 +21,8 @@
 .DS_Store
 *.pem
 *.tgz
+.claude
+.cursor
 
 # debug
 npm-debug.log*
