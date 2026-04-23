@@ -84,6 +84,10 @@ impl Type {
     pub fn new(root: TypeId, graph: Rc<TypeGraph>) -> Self {
         Self { root, graph }
     }
+
+    pub fn declaration(&self) -> Option<&TypeDeclaration> {
+        self.graph.get(self.root)
+    }
 }
 
 impl TypeGraph {
@@ -95,6 +99,10 @@ impl TypeGraph {
             }
         }
         TypeGraph { types }
+    }
+
+    pub fn get(&self, id: TypeId) -> Option<&TypeDeclaration> {
+        self.types.get(&id)
     }
 }
 
