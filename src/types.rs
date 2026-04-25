@@ -76,13 +76,13 @@ pub enum WorkerOut<'a> {
     #[serde(rename = "debug")]
     Debug { info: DebugInfo },
 
-    /// Request the main thread to trigger a file download (workers have no document/window).
-    #[serde(rename = "download")]
-    Download {
+    /// Emit a build/runtime artifact for the main thread to consume.
+    #[serde(rename = "artifact")]
+    Artifact {
         #[tsify(type = "Uint8Array")]
         #[serde(with = "serde_bytes")]
         data: Vec<u8>,
-        filename: String,
+        name: String,
     },
 
     /// Sent when execution pauses

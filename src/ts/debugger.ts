@@ -1,15 +1,35 @@
 import EventEmitter from 'events';
 
-import { DapAdapter, LocationInfo as RustLocation } from '../../pkg/runtime';
+import { DapAdapter, WorkerOut } from '../../pkg/runtime';
 import { Internals } from './internals';
-
-export type LocationInfo = Omit<RustLocation, 'file'> & {
-  readonly file: string;
-};
 
 type DebuggerEventMap = {
   event: [unknown];
+  artifact: [Artifact];
 };
+
+export class Artifact {
+  public readonly name: string;
+  public readonly data: Uint8Array;
+
+  constructor(name: string, data: Uint8Array) {
+    this.name = name;
+    this.data = data;
+  }
+
+  public download() {
+    const bytes = new Uint8Array(this.data);
+    const blob = new Blob([bytes]);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = this.name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+}
 
 export class Debugger extends EventEmitter<DebuggerEventMap> {
   /**
@@ -40,6 +60,11 @@ export class Debugger extends EventEmitter<DebuggerEventMap> {
   }
 
   private attach(worker: Worker) {
+    worker.addEventListener('message', (event: MessageEvent<WorkerOut>) => {
+      if (event.data.type !== 'artifact') return;
+      const artifact = new Artifact(event.data.name, new Uint8Array(event.data.data));
+      this.emit('artifact', artifact);
+    });
     this.dap.attach(worker);
   }
 

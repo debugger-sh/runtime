@@ -35,7 +35,6 @@ async fn create_user_fs_rec(
                 .create(true)
                 .write(true)
                 .open(base_path)?;
-            web_sys::console::log_1(&format!("Injecting file at {:?}", base_path).into());
             file.write_all(contents.as_bytes())
                 .await
                 .expect("Failed to write injected file");
@@ -53,12 +52,50 @@ async fn create_user_fs_rec(
     Ok(())
 }
 
+fn collect_sources(node: &FsNode, base_path: &PathBuf, sources: &mut Vec<String>) {
+    match node {
+        FsNode::File(_) => {
+            if let Some(ext) = base_path.extension().and_then(|ext| ext.to_str()) {
+                let is_source = matches!(
+                    ext.to_ascii_lowercase().as_str(),
+                    "c" | "cc" | "cp" | "cpp" | "cxx" | "c++"
+                );
+                if is_source {
+                    sources.push(base_path.to_string_lossy().to_string());
+                }
+            }
+        }
+        FsNode::Dir(children) => {
+            collect_dir_sources(children, base_path, sources);
+        }
+    }
+}
+
+fn collect_dir_sources(
+    children: &std::collections::HashMap<String, FsNode>,
+    base_path: &PathBuf,
+    sources: &mut Vec<String>,
+) {
+    for (name, child_node) in children {
+        let mut child_path = base_path.clone();
+        child_path.push(name);
+        collect_sources(child_node, &child_path, sources);
+    }
+}
+
 // ============================================================================
 // Worker
 // ============================================================================
 
 async fn start(msg: WorkerStart) {
-    web_sys::console::log_1(&format!("Started! {:?}", msg).into());
+    let mut sources = Vec::new();
+    collect_dir_sources(&msg.fs, &PathBuf::from("/"), &mut sources);
+    sources.sort();
+
+    assert!(
+        !sources.is_empty(),
+        "No C/C++ source files found in provided filesystem"
+    );
 
     let fs = create_user_fs(FsNode::Dir(msg.fs))
         .await
@@ -88,14 +125,19 @@ async fn start(msg: WorkerStart) {
         "-x",
         "c++",
         "-std=c++23",
-        "/main.c",
+        "-o",
+        "/main.o",
     ];
 
     if msg.is_debug {
         clang_args.push("-O0");
         // because of the -cc1 flag
         clang_args.push("-debug-info-kind=standalone");
-        clang_args.push("-dwarf-version=4");
+        clang_args.push("-dwarf-version=5");
+    }
+
+    for source in &sources {
+        clang_args.push(source);
     }
 
     exec.step("clang")
@@ -152,13 +194,10 @@ async fn start(msg: WorkerStart) {
 #[wasm_bindgen]
 pub fn main() {
     console_error_panic_hook::set_once();
-    web_sys::console::log_1(&"worker starting".into());
-
     let scope = DedicatedWorkerGlobalScope::from(JsValue::from(js_sys::global()));
 
     // Function that gets called when the worker receives a message
     let onmessage = Closure::wrap(Box::new(move |msg: MessageEvent| {
-        web_sys::console::log_1(&"got message".into());
         let message: WorkerStart = serde_wasm_bindgen::from_value(msg.data()).expect("");
         // rust-ism: spawn_local is used to run the start function in a new thread
         wasm_bindgen_futures::spawn_local(start(message));

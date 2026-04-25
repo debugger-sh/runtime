@@ -63,11 +63,11 @@ fn parse_debug_functions(dwarf: &Dwarf) -> Vec<DebugFunction> {
                     return None;
                 }
 
-                let Some(low_pc) = child.low_pc() else {
+                let Some(low_pc) = child.address(gimli::DW_AT_low_pc) else {
                     return None;
                 };
 
-                let Some(high_pc) = child.high_pc() else {
+                let Some(high_pc) = child.address(gimli::DW_AT_high_pc) else {
                     return None;
                 };
 

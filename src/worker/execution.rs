@@ -138,9 +138,9 @@ impl<'a> Step<'a> {
                 .ensure("Read binary from filesystem")?;
 
             if self.debug {
-                WorkerOut::Download {
+                WorkerOut::Artifact {
                     data: wasm.clone(),
-                    filename: "pre.wasm".into(),
+                    name: "pre.wasm".into(),
                 }
                 .send();
 
@@ -148,9 +148,9 @@ impl<'a> Step<'a> {
                     instrument_wasm(&wasm).ensure("Instrumented WASM")?;
                 debugger = Some(Debuggee::new(info));
 
-                WorkerOut::Download {
+                WorkerOut::Artifact {
                     data: wasm.clone(),
-                    filename: "post.wasm".into(),
+                    name: "post.wasm".into(),
                 }
                 .send();
             }

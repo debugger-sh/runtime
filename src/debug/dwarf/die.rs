@@ -4,7 +4,7 @@ use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 
 use crate::types::GlobalAddress;
-use crate::util::{warning, weak_error};
+use crate::util::weak_error;
 
 use super::{Dwarf, R, Unit};
 use gimli::Reader;
@@ -73,28 +73,6 @@ impl<'a> Die<'a> {
         self.attr_to_string(gimli::DW_AT_name)
     }
 
-    pub fn low_pc(&self) -> Option<GlobalAddress> {
-        let high_pc = self.attr(gimli::DW_AT_low_pc)?;
-        match high_pc.value() {
-            gimli::AttributeValue::Addr(pc) => Some(GlobalAddress(pc)),
-            _ => {
-                warning!("Die {:?} has invalid low_pc", self.offset());
-                return None;
-            }
-        }
-    }
-
-    pub fn high_pc(&self) -> Option<GlobalAddress> {
-        let pc = self.attr(gimli::DW_AT_high_pc)?;
-        match pc.value() {
-            gimli::AttributeValue::Addr(pc) => Some(GlobalAddress(pc)),
-            _ => {
-                warning!("Die {:?} has invalid low_pc", self.offset());
-                return None;
-            }
-        }
-    }
-
     pub fn die(&self) -> &gimli::DebuggingInformationEntry<R> {
         &self.die
     }
@@ -104,6 +82,16 @@ impl<'a> Die<'a> {
             unit_index: self.ctx.unit.index(),
             unit_ofs: self.die.offset,
         }
+    }
+
+    pub fn address(&self, attr: gimli::DwAt) -> Option<GlobalAddress> {
+        let attr = self.attr(attr)?;
+        weak_error!(
+            self.ctx().unit_ref().attr_address(attr.value()),
+            "Could not parse attribute address"
+        )
+        .flatten()
+        .map(GlobalAddress)
     }
 
     pub fn expression(&self, attr: gimli::DwAt, pc: GlobalAddress) -> Option<gimli::Expression<R>> {

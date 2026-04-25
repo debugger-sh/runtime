@@ -1,16 +1,16 @@
+import type { Artifact } from '@jtrb/runtime';
 import { $ } from 'bun';
 import chalk from 'chalk';
-import { spawn } from 'child_process';
+import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
-import { assertMatch, substitutePlaceholders } from './matcher';
+import { assertMatch, CaptureMap, substitutePlaceholders } from './matcher';
 
 type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
-type CaptureMap = Record<string, Json>;
 
 type RequestStep = {
   type: 'request';
@@ -37,6 +37,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');
 const DAP_PROJECT_DIR = path.join(ROOT, 'tools/dap');
 const TESTS_DIR = path.join(ROOT, 'tools/dap/tests');
+const OUTPUT_DIR = path.join(ROOT, 'tools/dap/output');
 const DIST_ENTRY = path.join(ROOT, 'dist/runtime.js');
 const DAP_TIMEOUT_MS = 1000;
 
@@ -174,6 +175,52 @@ async function readJsonFile<T>(filePath: string): Promise<T> {
   }
 }
 
+function isObjectLike(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function toUint8Array(value: unknown): Uint8Array | null {
+  if (value instanceof Uint8Array) return value;
+  if (Array.isArray(value) && value.every((v) => typeof v === 'number'))
+    return Uint8Array.from(value);
+  return null;
+}
+
+async function writeDerivedArtifacts(
+  testOutputDir: string,
+  wasmPath: string,
+  prefix: 'pre' | 'post'
+) {
+  const sh = (cmd: string) => $`sh -lc ${cmd}`.quiet().nothrow();
+
+  const watPath = path.join(testOutputDir, `${prefix}.wat`);
+  await sh(`which wasm-tools >/dev/null 2>&1 && wasm-tools print "${wasmPath}" > "${watPath}"`);
+
+  if (!existsSync(watPath))
+    await sh(`which wasm2wat >/dev/null 2>&1 && wasm2wat "${wasmPath}" > "${watPath}"`);
+
+  if (prefix === 'pre')
+    await sh(
+      `which llvm-dwarfdump >/dev/null 2>&1 && llvm-dwarfdump "${wasmPath}" > "${path.join(testOutputDir, 'pre.dwarf')}"`
+    );
+}
+
+async function handleArtifactOutput(testOutputDir: string, artifact: Artifact) {
+  if (!isObjectLike(artifact)) return;
+  if (typeof artifact.name !== 'string') return;
+  if (artifact.name !== 'pre.wasm' && artifact.name !== 'post.wasm') return;
+  const data = toUint8Array(artifact.data);
+  if (!data) return;
+
+  const wasmPath = path.join(testOutputDir, artifact.name);
+  await writeFile(wasmPath, data);
+  await writeDerivedArtifacts(
+    testOutputDir,
+    wasmPath,
+    artifact.name === 'pre.wasm' ? 'pre' : 'post'
+  );
+}
+
 async function collectFsNode(dirPath: string): Promise<Record<string, Json>> {
   async function walk(current: string): Promise<Record<string, Json>> {
     const out: Record<string, Json> = {};
@@ -244,6 +291,9 @@ async function runTest(testName: string): Promise<void> {
   const dapPath = path.join(testDir, 'dap.json');
   const file = await readJsonFile<TestFile>(dapPath);
   if (!Array.isArray(file.steps)) throw new Error(`${dapPath}: expected top-level steps[]`);
+  const testOutputDir = path.join(OUTPUT_DIR, testName);
+  await rm(testOutputDir, { recursive: true, force: true });
+  await mkdir(testOutputDir, { recursive: true });
 
   const fsNode = await collectFsNode(testDir);
   const { Runtime } = await import('@jtrb/runtime');
@@ -268,6 +318,7 @@ async function runTest(testName: string): Promise<void> {
     })
   );
   const eventQueue: Json[] = [];
+  const artifactTasks: Promise<void>[] = [];
   let resolveEventWaiter: ((v: Json) => void) | null = null;
   runtime.debugger.on('event', (msg: unknown) => {
     eventQueue.push(msg as Json);
@@ -276,6 +327,13 @@ async function runTest(testName: string): Promise<void> {
       resolveEventWaiter = null;
       fn(msg as Json);
     }
+  });
+  runtime.debugger.on('artifact', async (artifact) => {
+    const task = handleArtifactOutput(testOutputDir, artifact).catch((err) => {
+      logInfo(`artifact output failed: ${String(err)}`);
+    });
+    artifactTasks.push(task);
+    await task;
   });
   const waitForNextEvent = () =>
     new Promise<Json>((resolve) => {
@@ -352,8 +410,8 @@ async function runTest(testName: string): Promise<void> {
     await executeStep(step, label, true);
   }
 
-  // Best-effort wait for program completion after continue; avoid hanging forever.
   await Promise.race([runPromise, new Promise((resolve) => setTimeout(resolve, 1500))]);
+  await Promise.all(artifactTasks);
   logOk(`${testName} passed`);
 }
 

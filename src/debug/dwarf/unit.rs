@@ -12,18 +12,24 @@ use crate::{
 use super::R;
 use gimli::{Reader, UnitHeader};
 
+#[derive(Debug, Clone)]
+pub struct UnitProperties {
+    /// The index of this unit among all units in the dwarf output
+    index: usize,
+    /// The index of the first location in this unit in the global locations list
+    loc_offset: usize,
+}
+
 #[derive(Debug)]
 pub struct Unit {
     /// Provides direct access to `gimli`
     unit: gimli::Unit<R>,
-    index: usize,
+    properties: UnitProperties,
     files: Vec<PathBuf>,
     /// Information about the lines in this unit.
     /// Each of these is theoretically a breakable program statement
     /// (whether it actually is depends on if instrumentation code was generated)
     lines: Vec<LineRow>,
-    /// The index of the first location in this unit in the global locations list
-    loc_offset: usize,
 }
 
 #[derive(PartialEq, Debug, Clone)]
@@ -88,10 +94,9 @@ impl Unit {
 
         Self {
             unit,
-            index: self.index.clone(),
+            properties: self.properties.clone(),
             files: self.files.clone(),
             lines: self.lines.clone(),
-            loc_offset: self.loc_offset.clone(),
         }
     }
 
@@ -111,7 +116,7 @@ impl Unit {
     }
 
     pub fn index(&self) -> usize {
-        self.index
+        self.properties.index
     }
 
     pub fn locations(&self) -> impl Iterator<Item = Location<'_>> {
@@ -123,7 +128,7 @@ impl Unit {
     }
 
     pub fn location_at(&self, index: usize) -> Option<Location<'_>> {
-        let local_index = index.checked_sub(self.loc_offset)?;
+        let local_index = index.checked_sub(self.properties.loc_offset)?;
         self.lines.get(local_index).map(|line| Location {
             unit: self,
             line,
@@ -165,11 +170,10 @@ impl<'a> UnitParser<'a> {
         self.loc_index += lines.len();
 
         Some(Unit {
+            properties: UnitProperties { index, loc_offset },
             unit,
-            index,
             files,
             lines,
-            loc_offset,
         })
     }
 }
