@@ -29,10 +29,12 @@
     "dist"
   ],
   "scripts": {
-    "dev": "wasm-pack build --target web --debug && vite build",
-    "build": "wasm-pack build --target web && vite build",
+    "build:rust": "wasm-pack build --target web",
+    "build:js": "vite build",
+    "build": "npm run build:rust -- --dev && npm run build:js",
+    "build:release": "npm run build:rust && npm run build:js",
     "tools:dap": "cd tools/dap && npm run test",
-    "prepublishOnly": "npm run build",
+    "prepublishOnly": "npm run build:release",
     "prepare": "husky"
   },
   "lint-staged": {
