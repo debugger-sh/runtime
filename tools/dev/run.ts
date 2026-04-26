@@ -39,8 +39,7 @@ async function run(label: string, cmd: string, args: string[], env?: Record<stri
   spinner.start(`Building ${label}...`);
   return new Promise<boolean>((resolve) => {
     const startedAt = performance.now();
-    const elapsed = () =>
-      chalk.bold(`${Math.round((performance.now() - startedAt) / 1000).toFixed(1)}s`);
+    const elapsed = () => chalk.bold(`${((performance.now() - startedAt) / 1000).toFixed(1)}s`);
 
     let output = '';
     const append = (chunk: Buffer) => (output += chunk.toString());

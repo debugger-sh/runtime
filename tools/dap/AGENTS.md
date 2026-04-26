@@ -3,7 +3,7 @@
 Use this tool to run end-to-end Debugger Adapter Protocol (DAP) integration tests.
 
 - Run all tests with `npm run tools:dap` (from repo root), or one test with `npm run tools:dap -- <test-name>`.
-- Build the runtime before testing (`npm run build` or `npm run dev`); the harness does not auto-build.
+- It is safe (and encouraged) to run this alongside `npm run dev`. This tool will wait for any in-progress builds initiated by `npm run dev` to complete before starting the tests.
 - The harness links the local package into `tools/dap` before running tests.
 - It executes scripted DAP request/response/event flows from `tools/dap/tests/*/dap.json` against a real runtime session.
 - For triage, per-test artifacts/log outputs are written to `tools/dap/output/<test-name>/`, including emitted WASM files (`pre.wasm`, `post.wasm`) and derived dumps like `pre.wat`/`post.wat` (and `pre.dwarf` when `llvm-dwarfdump` is available).
