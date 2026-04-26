@@ -4,7 +4,7 @@
       "type": "request",
       "command": "setBreakpoints",
       "arguments": {
-        "source": { "path": "/main.c" },
+        "source": { "path": "/main.cpp" },
         "breakpoints": [{ "line": 8 }]
       }
     },

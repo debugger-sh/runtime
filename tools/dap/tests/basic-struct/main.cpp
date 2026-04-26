@@ -5,5 +5,5 @@ struct Point {
 
 int main() {
   Point p{1, 2};
-  return p.x + p.y;
+  return p.x + p.y - 3;
 }
