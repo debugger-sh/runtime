@@ -7,30 +7,47 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import { createLldbBackend } from './lldb';
 import { CaptureMap, match, MatchResult, substitutePlaceholders } from './matcher';
 
-type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
+export type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
 
-type RequestStep = {
+export type RequestStep = {
   type: 'request';
   command: string;
   arguments?: Json;
+  $fireAndForget?: boolean;
 };
-type ResponseStep = {
+export type ResponseStep = {
   type: 'response';
   success?: boolean;
   command?: string;
   body?: Json;
 };
-type EventStep = {
+export type EventStep = {
   type: 'event';
   event: string;
   body?: Json;
   $timeout?: number;
 };
-type Step = RequestStep | ResponseStep | EventStep;
+export type Step = RequestStep | ResponseStep | EventStep;
 
 type TestFile = { steps: Step[] };
+
+export type BackendOptions = {
+  testDir: string;
+  testOutputDir: string;
+  fsNode: Record<string, Json>;
+};
+
+export interface Backend {
+  send(req: Json): Promise<Json>;
+  onEvent(cb: (e: Json) => void): void;
+  onArtifact?(cb: (a: Artifact) => void): void;
+  initSteps(): Step[];
+  rewriteOutgoing(req: Json): Json;
+  shutdown(): Promise<void>;
+}
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');
@@ -40,7 +57,7 @@ const OUTPUT_DIR = path.join(ROOT, 'tools/dap/output');
 const DAP_TIMEOUT_MS = 1000;
 const DEV_BUILD_MARKER = path.join(ROOT, 'node_modules/build.lock');
 
-const INIT_STEPS: Step[] = [
+const RUNTIME_INIT_STEPS: Step[] = [
   {
     type: 'request',
     command: 'initialize',
@@ -62,6 +79,12 @@ const INIT_STEPS: Step[] = [
   { type: 'event', event: 'initialized', $timeout: 10000 },
 ];
 
+type CliOpts = {
+  tests: string[];
+  lldb: boolean;
+  lldbPath?: string;
+};
+
 function logInfo(msg: string) {
   console.log(`${chalk.cyan('info')} ${msg}`);
 }
@@ -79,8 +102,23 @@ function die(msg: string): never {
   process.exit(1);
 }
 
-function parseCli(argv: string[]) {
-  return { tests: argv };
+function parseCli(argv: string[]): CliOpts {
+  let lldb = false;
+  let lldbPath: string | undefined;
+  const tests: string[] = [];
+  for (const arg of argv) {
+    if (arg === '--lldb') {
+      lldb = true;
+    } else if (arg.startsWith('--lldb-path=')) {
+      lldb = true;
+      lldbPath = arg.slice('--lldb-path='.length);
+    } else if (arg.startsWith('--')) {
+      die(`unknown flag: ${arg}`);
+    } else {
+      tests.push(arg);
+    }
+  }
+  return { tests, lldb, lldbPath };
 }
 
 async function ensureRuntimeLinked() {
@@ -252,24 +290,11 @@ async function waitForEvent(
   throw new Error(`timed out waiting for event '${eventName}' after ${timeoutMs}ms`);
 }
 
-async function runTest(testName: string): Promise<void> {
-  const testDir = path.join(TESTS_DIR, testName);
-  const testStat = await stat(testDir).catch(() => null);
-  if (!testStat || !testStat.isDirectory()) throw new Error(`unknown test '${testName}'`);
-
-  const dapPath = path.join(testDir, 'dap.json');
-  const file = await readJsonFile<TestFile>(dapPath);
-  if (!Array.isArray(file.steps)) throw new Error(`${dapPath}: expected top-level steps[]`);
-  const testOutputDir = path.join(OUTPUT_DIR, testName);
-  await rm(testOutputDir, { recursive: true, force: true });
-  await mkdir(testOutputDir, { recursive: true });
-
-  const fsNode = await collectFsNode(testDir);
+async function createRuntimeBackend(opts: BackendOptions): Promise<Backend> {
   const { Runtime } = await import('@jtrb/runtime');
-
   const runtime = await Runtime.create('c');
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  runtime.fs = fsNode as unknown as any;
+  runtime.fs = opts.fsNode as unknown as any;
 
   const decoder = new TextDecoder();
   runtime.stdout.pipeTo(
@@ -286,12 +311,65 @@ async function runTest(testName: string): Promise<void> {
       },
     })
   );
+
+  const eventCbs: ((e: Json) => void)[] = [];
+  const artifactCbs: ((a: Artifact) => void)[] = [];
+
+  runtime.debugger.on('event', (msg: unknown) => {
+    for (const cb of eventCbs) cb(msg as Json);
+  });
+  runtime.debugger.on('artifact', (artifact) => {
+    for (const cb of artifactCbs) cb(artifact);
+  });
+
+  const runPromise = runtime.run();
+
+  return {
+    async send(req) {
+      return runtime.debugger.send(req) as Json;
+    },
+    onEvent(cb) {
+      eventCbs.push(cb);
+    },
+    onArtifact(cb) {
+      artifactCbs.push(cb);
+    },
+    initSteps: () => RUNTIME_INIT_STEPS,
+    rewriteOutgoing: (req) => req,
+    async shutdown() {
+      await Promise.race([runPromise, new Promise((resolve) => setTimeout(resolve, 1500))]).catch(
+        () => {
+          /* swallow; reported as test failure if needed */
+        }
+      );
+    },
+  };
+}
+
+async function runTest(testName: string, opts: CliOpts): Promise<void> {
+  const testDir = path.join(TESTS_DIR, testName);
+  const testStat = await stat(testDir).catch(() => null);
+  if (!testStat || !testStat.isDirectory()) throw new Error(`unknown test '${testName}'`);
+
+  const dapPath = path.join(testDir, 'dap.json');
+  const file = await readJsonFile<TestFile>(dapPath);
+  if (!Array.isArray(file.steps)) throw new Error(`${dapPath}: expected top-level steps[]`);
+  const testOutputDir = path.join(OUTPUT_DIR, testName);
+  await rm(testOutputDir, { recursive: true, force: true });
+  await mkdir(testOutputDir, { recursive: true });
+
+  const fsNode = await collectFsNode(testDir);
+  const backendOpts: BackendOptions = { testDir, testOutputDir, fsNode };
+  const backend = opts.lldb
+    ? await createLldbBackend(backendOpts, { lldbPath: opts.lldbPath })
+    : await createRuntimeBackend(backendOpts);
+
   const eventQueue: Json[] = [];
   const rawDapLog: Json[] = [];
   const artifactTasks: Promise<void>[] = [];
   let resolveEventWaiter: ((v: Json) => void) | null = null;
-  runtime.debugger.on('event', (msg: unknown) => {
-    const event = msg as Json;
+
+  backend.onEvent((event) => {
     rawDapLog.push(event);
     eventQueue.push(event);
     if (resolveEventWaiter) {
@@ -300,22 +378,25 @@ async function runTest(testName: string): Promise<void> {
       fn(event);
     }
   });
-  runtime.debugger.on('artifact', async (artifact) => {
-    const task = handleArtifactOutput(testOutputDir, artifact).catch((err) => {
-      logInfo(`artifact output failed: ${String(err)}`);
+  if (backend.onArtifact) {
+    backend.onArtifact((artifact) => {
+      const task = handleArtifactOutput(testOutputDir, artifact).catch((err) => {
+        logInfo(`artifact output failed: ${String(err)}`);
+      });
+      artifactTasks.push(task);
+      void task;
     });
-    artifactTasks.push(task);
-    await task;
-  });
+  }
+
   const waitForNextEvent = () =>
     new Promise<Json>((resolve) => {
       resolveEventWaiter = resolve;
     });
 
-  const runPromise = runtime.run();
   const captures: CaptureMap = {};
   let seq = 1;
   let lastResponse: Json | null = null;
+
   const executeStep = async (step: Step, label: string, visible: boolean) => {
     if (step.type === 'request') {
       if (visible) logStep(`${label} ${step.command}`);
@@ -328,11 +409,24 @@ async function runTest(testName: string): Promise<void> {
         },
         captures
       ) as Json;
+      const finalReq = backend.rewriteOutgoing(reqObj);
+      rawDapLog.push(finalReq);
 
-      rawDapLog.push(reqObj);
-      lastResponse = runtime.debugger.send(reqObj) as Json;
+      if (step.$fireAndForget) {
+        backend.send(finalReq).then(
+          (resp) => {
+            rawDapLog.push(resp);
+          },
+          (err) => {
+            rawDapLog.push({ $sendError: String(err) } as unknown as Json);
+          }
+        );
+        lastResponse = null;
+        return;
+      }
+
+      lastResponse = await backend.send(finalReq);
       rawDapLog.push(lastResponse);
-
       return;
     }
 
@@ -362,7 +456,7 @@ async function runTest(testName: string): Promise<void> {
   let failure: Error | null = null;
   try {
     logStep(`[0/${file.steps.length}] setup debugger session`);
-    for (const step of INIT_STEPS) {
+    for (const step of backend.initSteps()) {
       await executeStep(step, '[init]', false);
     }
 
@@ -375,11 +469,7 @@ async function runTest(testName: string): Promise<void> {
     failure = asError(err);
   }
 
-  await Promise.race([runPromise, new Promise((resolve) => setTimeout(resolve, 1500))]).catch(
-    (err) => {
-      if (!failure) failure = asError(err);
-    }
-  );
+  await backend.shutdown();
   await Promise.all(artifactTasks);
   await writeFile(path.join(testOutputDir, 'log.json'), JSON.stringify(rawDapLog, null, 2));
   if (failure) throw failure;
@@ -387,14 +477,23 @@ async function runTest(testName: string): Promise<void> {
 }
 
 async function main() {
-  const { tests: requestedTests } = parseCli(process.argv.slice(2));
-  if (!existsSync(path.join(ROOT, 'dist/runtime.js')))
-    die(`missing dist/runtime.js. Run 'npm run build' first.`);
-  await waitForDevBuild();
-  await ensureRuntimeLinked();
+  const opts = parseCli(process.argv.slice(2));
+
+  if (!opts.lldb) {
+    if (!existsSync(path.join(ROOT, 'dist/runtime.js')))
+      die(`missing dist/runtime.js. Run 'npm run build' first.`);
+    await waitForDevBuild();
+    await ensureRuntimeLinked();
+  } else {
+    logInfo(
+      `${chalk.bold('--lldb')}: running against ${chalk.bold(
+        'lldb-dap'
+      )} as a golden reference (mismatches are informational)`
+    );
+  }
 
   const available = await listTestNames();
-  const tests = requestedTests.length ? requestedTests : available;
+  const tests = opts.tests.length ? opts.tests : available;
   if (tests.length === 0) die(`no tests found in ${TESTS_DIR}`);
 
   for (const test of tests) {
@@ -407,7 +506,7 @@ async function main() {
 
   for (const test of tests) {
     try {
-      await runTest(test);
+      await runTest(test, opts);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       failed.push({ name: test, error: message });
@@ -419,6 +518,14 @@ async function main() {
     console.error(`\n${chalk.red(`${failed.length}/${tests.length} test(s) failed`)}`);
     for (const f of failed) {
       console.error(`${chalk.red('-')} ${f.name}`);
+    }
+    if (opts.lldb) {
+      console.error(
+        chalk.dim(
+          `(--lldb is exploratory; exiting 0. inspect ${path.relative(ROOT, OUTPUT_DIR)}/<name>/log.json for actual lldb-dap traffic.)`
+        )
+      );
+      return;
     }
     process.exit(1);
   }

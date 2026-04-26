@@ -33,7 +33,7 @@
     "build:ts": "vite build",
     "build": "npm run build:rs && npm run build:ts",
     "dev": "cd tools/dev && npm run dev",
-    "tools:dap": "cd tools/dap && npm run test",
+    "tools:dap": "cd tools/dap && npm run test --",
     "prepublishOnly": "npm run build",
     "prepare": "husky"
   },
