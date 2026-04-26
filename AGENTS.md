@@ -1,6 +1,8 @@
-## Build
+## Developing and Building
 
-- Use `npm run build` to build the project.
+- `npm run build` to build the project.
+- `npm run tools:dap` to run a suite of integration tests against the Debugger Adapter Protocol (DAP).
+- `npm run tools:dap -- {test}` to run a specific integration test.
 - This command builds the Rust components to WASM and then bundles everything into the npm library.
 
 ## Contribution Standards

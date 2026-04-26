@@ -73,7 +73,7 @@ export class Runtime {
   static async create(lang: Lang): Promise<Runtime> {
     // TODO: Using `wasmBinary` bakes the wasm rust binary into the package
     // In the future, we should resolve from CDN on prod
-    await init(wasmBinary);
+    await init({ module_or_path: wasmBinary });
     return new Runtime(lang);
   }
 
