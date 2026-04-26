@@ -71,12 +71,14 @@ impl Debuggee {
             .unwrap(),
         );
 
-        imports.define(
-            "debug",
-            "stack",
-            Memory::from_jsvalue(store, &self.info.stack.ty, self.info.stack.memory.as_ref())
-                .unwrap(),
-        );
+        if self.info.is_multi_memory() {
+            imports.define(
+                "debug",
+                "stack",
+                Memory::from_jsvalue(store, &self.info.stack.ty, self.info.stack.memory.as_ref())
+                    .unwrap(),
+            );
+        }
 
         imports.define(
             "debug",

@@ -6,6 +6,7 @@ pub use function::*;
 
 use crate::debug::dwarf::Dwarf;
 use crate::types::{BP_PREFIX_BYTES, DebugFunction, DebugInfo, MemoryDescriptor};
+use crate::util::supports_wasm_multi_memory;
 use anyhow::Result;
 use std::collections::HashMap;
 use wasm_encoder::reencode;
@@ -39,11 +40,25 @@ fn parse_debug_info(wasm: &[u8]) -> Result<DebugInfo> {
     let dwarf = Dwarf::from_sections(&sections)?;
     let nlocs = dwarf.locations().count();
 
+    let supports_mm = supports_wasm_multi_memory();
+    let memory = if supports_mm {
+        MemoryDescriptor::new(memory_initial, 16 * memory_initial)
+    } else {
+        // No multi-memory support: reserve extra main memory capacity for debug stack data.
+        MemoryDescriptor::new(16 * memory_initial, 16 * memory_initial)
+    };
+
+    let stack = if supports_mm {
+        MemoryDescriptor::new(16, 16)
+    } else {
+        memory.clone()
+    };
+
     Ok(DebugInfo {
         functions: parse_debug_functions(&dwarf),
         breakpoints: js_sys::SharedArrayBuffer::new((BP_PREFIX_BYTES + nlocs) as u32),
-        memory: MemoryDescriptor::new(memory_initial, 16 * memory_initial),
-        stack: MemoryDescriptor::new(16, 16),
+        memory,
+        stack,
         dwarf,
     })
 }

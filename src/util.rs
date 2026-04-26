@@ -51,3 +51,25 @@ macro_rules! weak_error {
     };
 }
 pub(crate) use weak_error;
+
+/// Checks if [WASM multi-memory](https://developer.mozilla.org/en-US/docs/WebAssembly/Reference/JavaScript_interface/Memory#webassembly.multiMemory)
+/// is supported on this platform.
+///
+/// Some platforms (like Bun) do not support this feature since it is relatively new.
+/// If it is not supported, we will place the debug stack in the same memory as program memory.
+pub(crate) fn supports_wasm_multi_memory() -> bool {
+    // Minimal module with two memory imports.
+    const MULTI_MEMORY_PROBE: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, // \0asm
+        0x01, 0x00, 0x00, 0x00, // version
+        0x02, 0x20, // import section, 32 bytes
+        0x02, // 2 imports
+        0x05, b'd', b'e', b'b', b'u', b'g', // module "debug"
+        0x06, b'm', b'e', b'm', b'o', b'r', b'y', // name "memory"
+        0x02, 0x00, 0x01, // memory min=1
+        0x05, b'd', b'e', b'b', b'u', b'g', // module "debug"
+        0x05, b's', b't', b'a', b'c', b'k', // name "stack"
+        0x02, 0x00, 0x01, // memory min=1
+    ];
+    js_sys::WebAssembly::validate(&js_sys::Uint8Array::from(MULTI_MEMORY_PROBE)).unwrap_or(false)
+}

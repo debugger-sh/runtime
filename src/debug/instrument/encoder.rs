@@ -27,13 +27,14 @@ impl<'a> Instrumenter<'a> {
         for (index, loc) in info.dwarf.locations().enumerate() {
             breakpoints.entry(loc.address()).or_insert(index);
         }
+        let stack_mem_index = if info.is_multi_memory() { 1 } else { 0 };
 
         Self {
             info,
             validator: wasmparser::Validator::new(),
             bkpt_type_index: 0,
             bkpt_fn_index: 0,
-            stack_mem_index: 1,
+            stack_mem_index,
             sp_gl_index: 0,
             num_imported_functions: 0,
             num_imported_globals: 0,
@@ -208,7 +209,9 @@ impl<'a> reencode::Reencode for Instrumenter<'a> {
         }
 
         add_mem_import(imports, "memory", &self.info.memory.ty);
-        add_mem_import(imports, "stack", &self.info.stack.ty);
+        if self.info.is_multi_memory() {
+            add_mem_import(imports, "stack", &self.info.stack.ty);
+        }
 
         self.sp_gl_index = self.num_imported_globals;
         imports.import(

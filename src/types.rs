@@ -226,6 +226,11 @@ pub struct DebugFrameEntry {
 // ============================================================================
 
 impl DebugInfo {
+    /// Whether we store the debug stack separately from the main program memory.
+    pub fn is_multi_memory(&self) -> bool {
+        !js_sys::Object::is(self.memory.memory.as_ref(), self.stack.memory.as_ref())
+    }
+
     pub fn get_bp_state(&self) -> js_sys::Int32Array {
         js_sys::Int32Array::new_with_byte_offset_and_length(&self.breakpoints, 0, 2)
     }
