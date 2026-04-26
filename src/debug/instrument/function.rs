@@ -334,8 +334,9 @@ impl<'a, 'b, 'c> FnInstrumenter<'a, 'b, 'c> {
 
             self.instructions
                 .push(Instruction::GlobalGet(self.instr.sp_gl_index));
-            self.instructions
-                .push(Instruction::GlobalGet(global_idx as u32));
+            self.instructions.push(Instruction::GlobalGet(
+                self.instr.global_index(global_idx as u32)?,
+            ));
             self.emit_store(ty, offset);
         }
 

@@ -131,7 +131,7 @@ impl<'a> Step<'a> {
         let mut debugger = None;
 
         let binary_bytes = if binary_loc.starts_with("/") {
-            let wasm = self
+            let mut wasm = self
                 .exec
                 .read_bytes(binary_loc)
                 .await
@@ -144,9 +144,12 @@ impl<'a> Step<'a> {
                 }
                 .send();
 
-                let InstrumenterResult { info, wasm } =
-                    instrument_wasm(&wasm).ensure("Instrumented WASM")?;
+                let InstrumenterResult {
+                    info,
+                    wasm: instrumented_wasm,
+                } = instrument_wasm(&wasm).ensure("Instrumented WASM")?;
                 debugger = Some(Debuggee::new(info));
+                wasm = instrumented_wasm;
 
                 WorkerOut::Artifact {
                     data: wasm.clone(),

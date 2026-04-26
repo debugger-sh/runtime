@@ -5,6 +5,8 @@
   - It is optimized for quick build times. To build for release, use `npm run build:release`.
 - `npm run tools:dap` to run a suite of integration tests against the Debugger Adapter Protocol (DAP).
 - `npm run tools:dap -- {test}` to run a specific integration test.
+- Don't use `web_sys::console`, instead use the provided `util::log!` and `util::warn!` macros which provide native Rust formatting.
+- Use `util::weak_error!` to dilute a `Result` into an `Option` (logging the error) for exceptional behaviour that doesn't need to panic, and especially in core interfaces.
 
 ## Contribution Standards
 
