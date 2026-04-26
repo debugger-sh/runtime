@@ -44,10 +44,9 @@ jobs:
         run: npm ci
         working-directory: demo
 
-      # demo imports 'runtime' via a symlink to the root package
       - name: Link runtime into demo
-        run: ln -s ../.. demo/node_modules/runtime
+        run: npm link
 
       - name: Build demo
-        run: npm run build
+        run: npm link @jtrb/runtime && npm run build
         working-directory: demo
