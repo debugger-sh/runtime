@@ -73,6 +73,6 @@ Adapter discovery order:
 
 Expected divergences (treat them as data, not bugs):
 
-- `threadId`: lldb-dap reports a real Mach TID (e.g. `11053006`); runtime uses `1`. Capture it with `${{tid}}` if you want a portable test.
+- `threadId`: lldb-dap reports a real TID (e.g. `11053006`); runtime uses `1`. Capture it with `${{tid}}` if you want a portable test.
 - `value` / `type` formatting: lldb-dap and the runtime stringify variables differently, especially for compound types.
 - `frameId`, `variablesReference`: opaque integers — already captured via `${{...}}` in the existing tests, so they don't need to match literally.
