@@ -3,7 +3,6 @@ import chalk from 'chalk';
 import { type ChildProcess, spawn } from 'node:child_process';
 import { watch } from 'node:fs';
 import { readFile, rm, writeFile } from 'node:fs/promises';
-import net from 'node:net';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
@@ -14,7 +13,6 @@ const ROOT = path.resolve(HERE, '../..');
 const SRC = path.join(ROOT, 'src');
 const SRC_TS = path.join(SRC, 'ts');
 const PKG = path.join(ROOT, 'pkg');
-const START_PORT = 8000;
 const BUILD_MARKER = path.join(ROOT, 'node_modules/build.lock');
 
 const spinner = yoctoSpinner();
@@ -117,26 +115,9 @@ function watchTree() {
   });
 }
 
-async function isPortOpen(candidate: number) {
-  return new Promise<boolean>((resolve) => {
-    const server = net.createServer();
-    server.once('error', () => resolve(false));
-    server.once('listening', () => {
-      server.close(() => resolve(true));
-    });
-    server.listen(candidate, '127.0.0.1');
-  });
-}
-
-async function findOpenPort(start: number) {
-  let candidate = start;
-  while (!(await isPortOpen(candidate))) candidate += 1;
-  return candidate;
-}
-
 function startWasmServer() {
-  serve({
-    port,
+  const server = serve({
+    port: 0,
     fetch: async (req) => {
       const corsHeaders = {
         'access-control-allow-origin': '*',
@@ -160,12 +141,12 @@ function startWasmServer() {
       }
     },
   });
+  return server.port!;
 }
 
 async function main() {
-  port = await findOpenPort(START_PORT);
+  port = startWasmServer();
   spinner.start('Starting...');
-  startWasmServer();
   await drainBuildQueue();
   isInitializing = false;
   spinner.success(`Ready on ${chalk.underline(`http://localhost:${port}`)}`);
