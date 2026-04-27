@@ -44,3 +44,35 @@ Each test is a directory under `tools/dap/tests/<test-name>/` with a required `d
 3. Add `tools/dap/tests/<new-test>/dap.json` with ordered `steps`.
 4. Start from an existing test and keep expectations minimal-but-specific (assert only fields that should be stable).
 5. Run `npm run tools:dap -- <new-test>`; inspect `tools/dap/output/<new-test>/` and console mismatch output when iterating.
+
+## Running Against `lldb-dap` (Golden Reference)
+
+For any test, you can run the same `dap.json` scenario against a real `lldb-dap` subprocess instead of the runtime:
+
+```
+npm run tools:dap -- --lldb
+npm run tools:dap -- --lldb <test-name>
+npm run tools:dap -- --lldb-path=/abs/path/to/lldb-dap
+```
+
+This lets you observe how a reference DAP implementation (the one shipped with Xcode / Homebrew LLVM) responds to the same scenario, so you can use it as a "golden standard" while iterating on the runtime's DAP behavior.
+
+How it works:
+
+- The harness compiles each test's `main.{cpp,c,cc}` to a native binary at `tools/dap/output/<test>/lldb/prog` using `xcrun clang++ -g -O0 -fno-inline -fstandalone-debug` (or `clang` for `.c`).
+- It spawns `lldb-dap` over stdio with standard `Content-Length`-framed DAP, auto-injects a `launch` request after `initialize`, then runs your `dap.json` steps unchanged.
+- Outgoing `source.path: "/main.cpp"` (the runtime's virtualized path) is rewritten to the absolute path of the on-disk source so `setBreakpoints` resolves correctly.
+- `--lldb` mode is **exploratory**: mismatches are printed in the same diff format as runtime mode, but the process always exits 0. The full request/response/event stream lands in `tools/dap/output/<test>/log.json` regardless of pass/fail — that's the artifact you read to see what lldb-dap actually returned.
+
+Adapter discovery order:
+
+1. `--lldb-path=<abs-path>` flag
+2. `LLDB_DAP_PATH` env var
+3. `xcrun -f lldb-dap` (Xcode toolchain)
+4. `command -v lldb-dap` on `PATH`
+
+Expected divergences (treat them as data, not bugs):
+
+- `threadId`: lldb-dap reports a real Mach TID (e.g. `11053006`); runtime uses `1`. Capture it with `${{tid}}` if you want a portable test.
+- `value` / `type` formatting: lldb-dap and the runtime stringify variables differently, especially for compound types.
+- `frameId`, `variablesReference`: opaque integers — already captured via `${{...}}` in the existing tests, so they don't need to match literally.

@@ -1,4 +1,3 @@
-import type { Artifact } from '@jtrb/runtime';
 import { $ } from 'bun';
 import chalk from 'chalk';
 import { existsSync } from 'node:fs';
@@ -7,47 +6,59 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import { createLldbBackend } from './backends/lldb.ts';
+import { createRuntimeBackend } from './backends/runtime.ts';
 import { CaptureMap, match, MatchResult, substitutePlaceholders } from './matcher';
 
-type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
+export type Json = null | boolean | number | string | Json[] | { [k: string]: Json };
 
-type RequestStep = {
+export type RequestStep = {
   type: 'request';
   command: string;
   arguments?: Json;
 };
-type ResponseStep = {
+export type ResponseStep = {
   type: 'response';
   success?: boolean;
   command?: string;
   body?: Json;
 };
-type EventStep = {
+export type EventStep = {
   type: 'event';
   event: string;
   body?: Json;
   $timeout?: number;
 };
-type Step = RequestStep | ResponseStep | EventStep;
+export type Step = RequestStep | ResponseStep | EventStep;
 
 type TestFile = { steps: Step[] };
 
+export type BackendOptions = {
+  testDir: string;
+  testOutputDir: string;
+  fsNode: Record<string, Json>;
+};
+
+export interface Backend {
+  send(req: Json): Promise<Json>;
+  onEvent(cb: (e: Json) => void): void;
+  shutdown(): Promise<void>;
+}
+
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '../..');
-const DAP_PROJECT_DIR = path.join(ROOT, 'tools/dap');
 const TESTS_DIR = path.join(ROOT, 'tools/dap/tests');
 const OUTPUT_DIR = path.join(ROOT, 'tools/dap/output');
 const DAP_TIMEOUT_MS = 1000;
 const DEV_BUILD_MARKER = path.join(ROOT, 'node_modules/build.lock');
-
-const INIT_STEPS: Step[] = [
+const COMMON_INIT_STEPS: Step[] = [
   {
     type: 'request',
     command: 'initialize',
     arguments: {
       clientID: 'dap-harness',
       clientName: 'dap-harness',
-      adapterID: 'runtime',
+      adapterID: 'lldb-dap',
       pathFormat: 'path',
       linesStartAt1: true,
       columnsStartAt1: true,
@@ -57,10 +68,21 @@ const INIT_STEPS: Step[] = [
     type: 'response',
     success: true,
     command: 'initialize',
-    body: { supportsConfigurationDoneRequest: true },
+  },
+  {
+    type: 'request',
+    command: 'launch',
+    arguments: {
+      stopOnEntry: false,
+    },
   },
   { type: 'event', event: 'initialized', $timeout: 10000 },
 ];
+
+type CliOpts = {
+  tests: string[];
+  lldb: boolean;
+};
 
 function logInfo(msg: string) {
   console.log(`${chalk.cyan('info')} ${msg}`);
@@ -79,14 +101,25 @@ function die(msg: string): never {
   process.exit(1);
 }
 
-function parseCli(argv: string[]) {
-  return { tests: argv };
+function parseCli(argv: string[]): CliOpts {
+  let lldb = false;
+  const tests: string[] = [];
+  for (const arg of argv) {
+    if (arg === '--lldb') {
+      lldb = true;
+    } else if (arg.startsWith('--')) {
+      die(`unknown flag: ${arg}`);
+    } else {
+      tests.push(arg);
+    }
+  }
+  return { tests, lldb };
 }
 
 async function ensureRuntimeLinked() {
   logInfo('installing runtime library...');
   await $`npm link`.cwd(ROOT).quiet();
-  await $`npm link @jtrb/runtime`.cwd(DAP_PROJECT_DIR).quiet();
+  await $`npm link @jtrb/runtime`.cwd(HERE).quiet();
 }
 
 async function listTestNames(): Promise<string[]> {
@@ -112,52 +145,6 @@ async function readJsonFile<T>(filePath: string): Promise<T> {
   } catch (err) {
     throw new Error(`invalid JSON in ${filePath}: ${String(err)}`);
   }
-}
-
-function isObjectLike(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function toUint8Array(value: unknown): Uint8Array | null {
-  if (value instanceof Uint8Array) return value;
-  if (Array.isArray(value) && value.every((v) => typeof v === 'number'))
-    return Uint8Array.from(value);
-  return null;
-}
-
-async function writeDerivedArtifacts(
-  testOutputDir: string,
-  wasmPath: string,
-  prefix: 'pre' | 'post'
-) {
-  const sh = (cmd: string) => $`sh -lc ${cmd}`.quiet().nothrow();
-
-  if (prefix === 'pre')
-    await sh(
-      `which llvm-dwarfdump >/dev/null 2>&1 && llvm-dwarfdump "${wasmPath}" > "${path.join(testOutputDir, 'pre.dwarf')}"`
-    );
-
-  const watPath = path.join(testOutputDir, `${prefix}.wat`);
-  await sh(`which wasm-tools >/dev/null 2>&1 && wasm-tools print "${wasmPath}" > "${watPath}"`);
-
-  if (!existsSync(watPath))
-    await sh(`which wasm2wat >/dev/null 2>&1 && wasm2wat "${wasmPath}" > "${watPath}"`);
-}
-
-async function handleArtifactOutput(testOutputDir: string, artifact: Artifact) {
-  if (!isObjectLike(artifact)) return;
-  if (typeof artifact.name !== 'string') return;
-  if (artifact.name !== 'pre.wasm' && artifact.name !== 'post.wasm') return;
-  const data = toUint8Array(artifact.data);
-  if (!data) return;
-
-  const wasmPath = path.join(testOutputDir, artifact.name);
-  await writeFile(wasmPath, data);
-  await writeDerivedArtifacts(
-    testOutputDir,
-    wasmPath,
-    artifact.name === 'pre.wasm' ? 'pre' : 'post'
-  );
 }
 
 async function collectFsNode(dirPath: string): Promise<Record<string, Json>> {
@@ -252,7 +239,7 @@ async function waitForEvent(
   throw new Error(`timed out waiting for event '${eventName}' after ${timeoutMs}ms`);
 }
 
-async function runTest(testName: string): Promise<void> {
+async function runTest(testName: string, opts: CliOpts): Promise<void> {
   const testDir = path.join(TESTS_DIR, testName);
   const testStat = await stat(testDir).catch(() => null);
   if (!testStat || !testStat.isDirectory()) throw new Error(`unknown test '${testName}'`);
@@ -265,33 +252,16 @@ async function runTest(testName: string): Promise<void> {
   await mkdir(testOutputDir, { recursive: true });
 
   const fsNode = await collectFsNode(testDir);
-  const { Runtime } = await import('@jtrb/runtime');
+  const backendOpts: BackendOptions = { testDir, testOutputDir, fsNode };
+  const backend = opts.lldb
+    ? await createLldbBackend(backendOpts)
+    : await createRuntimeBackend(backendOpts);
 
-  const runtime = await Runtime.create('c');
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  runtime.fs = fsNode as unknown as any;
-
-  const decoder = new TextDecoder();
-  runtime.stdout.pipeTo(
-    new WritableStream<Uint8Array>({
-      write(chunk) {
-        process.stdout.write(chalk.gray(decoder.decode(chunk)));
-      },
-    })
-  );
-  runtime.stderr.pipeTo(
-    new WritableStream<Uint8Array>({
-      write(chunk) {
-        process.stdout.write(chalk.gray(decoder.decode(chunk)));
-      },
-    })
-  );
   const eventQueue: Json[] = [];
   const rawDapLog: Json[] = [];
-  const artifactTasks: Promise<void>[] = [];
   let resolveEventWaiter: ((v: Json) => void) | null = null;
-  runtime.debugger.on('event', (msg: unknown) => {
-    const event = msg as Json;
+
+  backend.onEvent((event) => {
     rawDapLog.push(event);
     eventQueue.push(event);
     if (resolveEventWaiter) {
@@ -300,22 +270,15 @@ async function runTest(testName: string): Promise<void> {
       fn(event);
     }
   });
-  runtime.debugger.on('artifact', async (artifact) => {
-    const task = handleArtifactOutput(testOutputDir, artifact).catch((err) => {
-      logInfo(`artifact output failed: ${String(err)}`);
-    });
-    artifactTasks.push(task);
-    await task;
-  });
   const waitForNextEvent = () =>
     new Promise<Json>((resolve) => {
       resolveEventWaiter = resolve;
     });
 
-  const runPromise = runtime.run();
   const captures: CaptureMap = {};
   let seq = 1;
   let lastResponse: Json | null = null;
+
   const executeStep = async (step: Step, label: string, visible: boolean) => {
     if (step.type === 'request') {
       if (visible) logStep(`${label} ${step.command}`);
@@ -328,11 +291,10 @@ async function runTest(testName: string): Promise<void> {
         },
         captures
       ) as Json;
-
       rawDapLog.push(reqObj);
-      lastResponse = runtime.debugger.send(reqObj) as Json;
-      rawDapLog.push(lastResponse);
 
+      lastResponse = await backend.send(reqObj);
+      rawDapLog.push(lastResponse);
       return;
     }
 
@@ -362,7 +324,7 @@ async function runTest(testName: string): Promise<void> {
   let failure: Error | null = null;
   try {
     logStep(`[0/${file.steps.length}] setup debugger session`);
-    for (const step of INIT_STEPS) {
+    for (const step of COMMON_INIT_STEPS) {
       await executeStep(step, '[init]', false);
     }
 
@@ -375,26 +337,26 @@ async function runTest(testName: string): Promise<void> {
     failure = asError(err);
   }
 
-  await Promise.race([runPromise, new Promise((resolve) => setTimeout(resolve, 1500))]).catch(
-    (err) => {
-      if (!failure) failure = asError(err);
-    }
-  );
-  await Promise.all(artifactTasks);
+  await backend.shutdown();
   await writeFile(path.join(testOutputDir, 'log.json'), JSON.stringify(rawDapLog, null, 2));
   if (failure) throw failure;
   logOk(`${testName} passed`);
 }
 
 async function main() {
-  const { tests: requestedTests } = parseCli(process.argv.slice(2));
-  if (!existsSync(path.join(ROOT, 'dist/runtime.js')))
-    die(`missing dist/runtime.js. Run 'npm run build' first.`);
-  await waitForDevBuild();
-  await ensureRuntimeLinked();
+  const opts = parseCli(process.argv.slice(2));
+
+  if (!opts.lldb) {
+    if (!existsSync(path.join(ROOT, 'dist/runtime.js')))
+      die(`missing dist/runtime.js. Run 'npm run build' first.`);
+    await waitForDevBuild();
+    await ensureRuntimeLinked();
+  } else {
+    logInfo(`${chalk.bold('--lldb')}: running against ${chalk.bold('lldb-dap')}`);
+  }
 
   const available = await listTestNames();
-  const tests = requestedTests.length ? requestedTests : available;
+  const tests = opts.tests.length ? opts.tests : available;
   if (tests.length === 0) die(`no tests found in ${TESTS_DIR}`);
 
   for (const test of tests) {
@@ -407,7 +369,7 @@ async function main() {
 
   for (const test of tests) {
     try {
-      await runTest(test);
+      await runTest(test, opts);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       failed.push({ name: test, error: message });
