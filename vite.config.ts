@@ -55,11 +55,25 @@ function wasm(): PluginOption {
     async load(id) {
       if (!id.endsWith('.wasm')) return;
       const devPort = process.env.WASM_DEV_PORT;
+      const isRelease = Boolean(process.env.WASM_RELEASE);
       const wasmFile = path.basename(id);
-      if (devPort) {
-        return `export default new URL("http://localhost:${devPort}/${wasmFile}");`;
-      }
-      return `export default new URL(${JSON.stringify(`${npmDistUrl}/${wasmFile}`)});`;
+
+      // In dev mode, we serve compiled Rust .wasm files from a local dev server
+      if (devPort) return `export default new URL("http://localhost:${devPort}/${wasmFile}");`;
+
+      // In release mode, we serve .wasm files from the npm registry via CDN
+      if (isRelease)
+        return `export default new URL(${JSON.stringify(`${npmDistUrl}/${wasmFile}`)});`;
+
+      // Otherwise, in normal local build, we b64 encode the .wasm files into a buffer
+      // and bake into the bundled output, resulting in a very large bundle size
+      const binary = fs.readFileSync(id);
+      const base64 = binary.toString('base64');
+      return `
+          const src = ${JSON.stringify(base64)};
+          const buf = Uint8Array.from(atob(src), c => c.charCodeAt(0));
+          export default buf;
+        `;
     },
   };
 }
