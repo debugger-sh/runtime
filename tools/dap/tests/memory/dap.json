@@ -1,0 +1,126 @@
+{
+  "steps": [
+    {
+      "type": "request",
+      "command": "setBreakpoints",
+      "arguments": {
+        "source": { "path": "main.cpp" },
+        "breakpoints": [{ "line": 13 }]
+      }
+    },
+    {
+      "type": "response",
+      "body": {
+        "breakpoints": {
+          "$array.contains": [{ "line": 13, "verified": true }]
+        }
+      }
+    },
+    {
+      "type": "request",
+      "command": "configurationDone",
+      "arguments": {}
+    },
+    {
+      "type": "event",
+      "event": "stopped",
+      "body": {
+        "reason": "breakpoint",
+        "threadId": "${{thread}}"
+      }
+    },
+    {
+      "type": "request",
+      "command": "stackTrace",
+      "arguments": { "threadId": "{{thread}}" }
+    },
+    {
+      "type": "response",
+      "body": {
+        "stackFrames": {
+          "$array.contains": [{ "name": "main", "id": "${{mainFrame}}" }]
+        }
+      }
+    },
+    {
+      "type": "request",
+      "command": "scopes",
+      "arguments": { "frameId": "{{mainFrame}}" }
+    },
+    {
+      "type": "response",
+      "body": {
+        "scopes": {
+          "$array.contains": [
+            {
+              "name": "Locals",
+              "variablesReference": "${{locals}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "request",
+      "command": "variables",
+      "arguments": {
+        "variablesReference": "{{locals}}"
+      }
+    },
+    {
+      "type": "response",
+      "body": {
+        "variables": [
+          {
+            "name": "rect",
+            "type": "Rectangle",
+            "memoryReference": "${{rect_addr}}",
+            "variablesReference": "${{rect}}"
+          }
+        ]
+      }
+    },
+    {
+      "type": "request",
+      "command": "variables",
+      "arguments": {
+        "variablesReference": "{{rect}}"
+      }
+    },
+    {
+      "type": "response",
+      "body": {
+        "variables": [
+          { "name": "p1", "type": "Point", "memoryReference": "${{p1_addr}}" },
+          {
+            "name": "p2",
+            "type": "Point",
+            "memoryReference": "${{p2_addr}}",
+            "variablesReference": "${{p2}}"
+          }
+        ]
+      }
+    },
+    {
+      "type": "request",
+      "command": "variables",
+      "arguments": {
+        "variablesReference": "{{p2}}"
+      }
+    },
+    {
+      "type": "response",
+      "body": {
+        "variables": [
+          { "name": "x", "type": "int", "memoryReference": "${{p2_x_addr}}" },
+          { "name": "y", "type": "int", "memoryReference": "${{p2_y_addr}}" }
+        ]
+      }
+    },
+    {
+      "type": "request",
+      "command": "continue",
+      "arguments": { "threadId": "{{thread}}" }
+    }
+  ]
+}

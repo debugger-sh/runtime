@@ -40,7 +40,7 @@ Each test is a directory under `tools/dap/tests/<test-name>/` with a required `d
 
 #### Helper Functions
 
-- `hex` is a small helper for tests: numbers become strings like `0xff`; strings that look like hex (`0x…`) become integers; strings of decimal digits become a hex string via that integer. Errors from `hex` surface like other script errors.
+- `hex`: a finite non-negative integer becomes a `0x…` lowercase hex string; only other accepted input is a string `0x` plus hex digits (case-insensitive), which parses to an integer. Errors from `hex` surface like other script errors.
 
 ## Adding New Tests
 

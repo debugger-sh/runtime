@@ -113,36 +113,22 @@ function parseHandlebarsExpression(value: string): string | null {
   return match[1].trim();
 }
 
-/** Bidirectional hex: hex strings (0x…) ↔ number; numbers ↔ 0x strings; decimal strings ↔ 0x strings. */
+/** `number` → `0x…` string; `0x` + hex digits → number. No other string forms. */
 export function hex(value: unknown): Json {
   if (typeof value === 'number') {
     if (!Number.isFinite(value) || Number.isNaN(value))
       throw new Error('hex: number must be finite');
-    const neg = value < 0;
-    const abs = Math.floor(Math.abs(value));
-    const h = abs.toString(16);
-    return (neg ? '-0x' : '0x') + h;
+    const n = Math.trunc(value);
+    if (n < 0) throw new Error('hex: negative integers are not supported');
+    return '0x' + n.toString(16);
   }
   if (typeof value === 'string') {
     const s = value.trim();
-    if (/^0x[0-9a-fA-F]+$/.test(s)) {
-      const n = parseInt(s.slice(2), 16);
-      if (!Number.isFinite(n)) throw new Error(`hex: invalid literal ${JSON.stringify(value)}`);
-      return n;
-    }
-    if (/^-0x[0-9a-fA-F]+$/.test(s)) {
-      const n = parseInt(s.slice(1), 16);
-      if (!Number.isFinite(n)) throw new Error(`hex: invalid literal ${JSON.stringify(value)}`);
-      return n;
-    }
-    if (/^-?[0-9]+$/.test(s)) {
-      const n = parseInt(s, 10);
-      if (!Number.isFinite(n)) throw new Error(`hex: invalid literal ${JSON.stringify(value)}`);
-      return hex(n);
-    }
-    throw new Error(`hex: unrecognised string ${JSON.stringify(value)}`);
+    if (!/^0x[0-9a-f]+$/i.test(s))
+      throw new Error(`hex: expected 0x followed by hex digits, got ${JSON.stringify(value)}`);
+    return parseInt(s, 16);
   }
-  throw new Error(`hex: expected number or string, got ${typeof value}`);
+  throw new Error(`hex: expected number or 0x hex string, got ${typeof value}`);
 }
 
 export function executeSnippet(code: string, captures: CaptureMap): Json {
