@@ -154,8 +154,40 @@
       "arguments": { "threadId": "{{thread}}" }
     },
     {
+      /** Expect that p1 is in the right location inside of rect */
       "type": "expect",
-      "description": ""
+      "run": "hex(p1_addr)",
+      "expect": "{{hex(rect_addr)}}"
+    },
+    {
+      /** Expect that p2 is in the right location inside of rect */
+      "type": "expect",
+      "run": "hex(p2_addr)",
+      "expect": "{{hex(rect_addr) + point_size}}"
+    },
+    {
+      /** Expect that p1.x is in the right location */
+      "type": "expect",
+      "run": "hex(p1_x_addr)",
+      "expect": "{{hex(p1_addr)}}"
+    },
+    {
+      /** Expect that p1.y is in the right location */
+      "type": "expect",
+      "run": "hex(p1_y_addr)",
+      "expect": "{{hex(p1_addr) + int_size}}"
+    },
+    {
+      /** Expect that p2.x is in the right location */
+      "type": "expect",
+      "run": "hex(p2_x_addr)",
+      "expect": "{{hex(p2_addr)}}"
+    },
+    {
+      /** Expect that p2.y is in the right location */
+      "type": "expect",
+      "run": "hex(p2_y_addr)",
+      "expect": "{{hex(p2_addr) + int_size}}"
     }
   ]
 }
