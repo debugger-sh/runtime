@@ -1,6 +1,6 @@
 # @jtrb/runtime
 
-A browser-based C++ runtime powered by WebAssembly. Compile and run C++ programs entirely in the browser, with full stdin/stdout/stderr streaming and a built-in debugger.
+A browser-based C++ runtime powered by WebAssembly. Compile and run C++ programs entirely in the browser, with stdin/stdout/stderr I/O and a built-in debugger.
 
 ## Installation
 
@@ -35,16 +35,16 @@ rt.fs = {
       std::cout << "Hello, world!" << std::endl;
       return 0;
     }
-  `,
+  `
 };
 
-// 3. Pipe stdout and stderr to wherever you want output
+// 3. Subscribe to stdout / stderr (chunks are UTF-8 bytes as Uint8Array)
 const decoder = new TextDecoder();
-rt.stdout.pipeTo(
-  new WritableStream({
-    write: (chunk) => process.stdout.write(decoder.decode(chunk)),
-  })
-);
+const printChunk = (chunk: Uint8Array) => {
+  process.stdout.write(decoder.decode(chunk));
+};
+rt.stdout.on('data', printChunk);
+rt.stderr.on('data', printChunk);
 
 // 4. Perform the required DAP handshake (see below), then run
 await rt.run();
@@ -68,7 +68,7 @@ const dapSend = (command: string, args: Record<string, unknown>) => {
     type: 'request',
     seq: dapSeq++,
     command,
-    arguments: args,
+    arguments: args
   });
 };
 
@@ -114,15 +114,14 @@ The runtime exposes a full DAP interface so that IDEs can add debugging features
 
 ## Wiring stdin
 
-`rt.stdin` is a `WritableStream`. Write UTF-8 encoded bytes to it and the program reads them via `cin`, `scanf`, `read()`, etc.
+`rt.stdin.write()` accepts a UTF-8 string or a `Uint8Array`. The program reads via `cin`, `scanf`, `read()`, etc.
 
 ```ts
-const encoder = new TextEncoder();
-const writer = rt.stdin.getWriter();
-
 // Send a line of input (programs typically expect a trailing newline)
-await writer.write(encoder.encode('42\n'));
-writer.releaseLock();
+await rt.stdin.write('42\n');
+
+// Or raw bytes:
+await rt.stdin.write(new TextEncoder().encode('42\n'));
 ```
 
 For interactive terminals (e.g. xterm.js), buffer keystrokes locally and flush on Enter:
@@ -133,9 +132,7 @@ let inputBuf = '';
 terminal.onData((data) => {
   if (data === '\r') {
     terminal.write('\r\n');
-    const w = rt.stdin.getWriter();
-    w.write(encoder.encode(inputBuf + '\n'));
-    w.releaseLock();
+    void rt.stdin.write(inputBuf + '\n');
     inputBuf = '';
   } else if (data === '\x7f') {
     if (inputBuf.length > 0) {
@@ -166,9 +163,9 @@ rt.stop(); // terminates the worker immediately; rt.run() resolves
 const rt = await Runtime.create('c');
 
 rt.fs; // DirNode  — virtual filesystem, set before calling run()
-rt.stdout; // ReadableStream<Uint8Array> — program stdout
-rt.stderr; // ReadableStream<Uint8Array> — program stderr
-rt.stdin; // WritableStream<Uint8Array> — program stdin
+rt.stdout; // RuntimeOutput — program stdout; use .on('data', fn) / .off('data', fn)
+rt.stderr; // RuntimeOutput — program stderr
+rt.stdin; // RuntimeStdin — program stdin; use .write(string | Uint8Array)
 rt.debugger; // Debugger — DAP interface
 rt.lang; // Lang     — language this runtime was created for
 

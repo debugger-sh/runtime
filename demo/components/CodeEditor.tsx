@@ -44,7 +44,8 @@ export default function CodeEditor() {
   const containerRef = useRef<HTMLDivElement | null>(null);
   // Ref to store onData handler for cleanup (prevents duplicate handlers)
   const onDataHandlerRef = useRef<{ dispose: () => void } | null>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
+  /** Removes stdout/stderr listeners from the last wire call. */
+  const ioCleanupRef = useRef<(() => void) | null>(null);
   const [demoStep, setDemoStep] = useState<DemoStep>('idle');
   const dapSeqRef = useRef<number>(1);
   /** Line for setBreakpoints on the next Run, after the `initialized` event (null = none). */
@@ -81,9 +82,9 @@ export default function CodeEditor() {
       onDataHandlerRef.current.dispose();
       onDataHandlerRef.current = null;
     }
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
+    if (ioCleanupRef.current) {
+      ioCleanupRef.current();
+      ioCleanupRef.current = null;
     }
     runtimeRef.current = null;
     setDemoStep('idle');
@@ -94,9 +95,9 @@ export default function CodeEditor() {
       onDataHandlerRef.current.dispose();
       onDataHandlerRef.current = null;
     }
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
+    if (ioCleanupRef.current) {
+      ioCleanupRef.current();
+      ioCleanupRef.current = null;
     }
     runtimeRef.current = null;
     isRunningRef.current = false;
@@ -116,7 +117,7 @@ export default function CodeEditor() {
     const breakpoints = line != null ? [{ line }] : [];
     await sendDapRequest('setBreakpoints', {
       source: { path: '/main.c' },
-      breakpoints,
+      breakpoints
     });
     await sendDapRequest('setExceptionBreakpoints', { filters: [] });
     await sendDapRequest('configurationDone', {});
@@ -155,7 +156,7 @@ export default function CodeEditor() {
       type: 'request' as const,
       seq: dapSeqRef.current++,
       command,
-      arguments: args,
+      arguments: args
     };
     console.log('DAP SEND:', request);
     writeDemoLog(`send ${command}`);
@@ -180,34 +181,19 @@ export default function CodeEditor() {
    * Call this after Runtime.create and before initialize + run().
    */
   const wireExecutionEnvironment = async (rt: Runtime) => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    abortControllerRef.current = new AbortController();
-    const signal = abortControllerRef.current.signal;
-
-    const terminal = new WritableStream<Uint8Array>({
-      write: (chunk) => {
-        const decoder = new TextDecoder();
-        const text = decoder.decode(chunk);
-        const normalized = text.replace(/\r?\n/g, '\r\n');
-        terminalRef.current?.write(normalized);
-      },
-      abort: () => {},
-    });
-
-    const stderrStream = new WritableStream<Uint8Array>({
-      write: (chunk) => {
-        const decoder = new TextDecoder();
-        const text = decoder.decode(chunk);
-        const normalized = text.replace(/\r?\n/g, '\r\n');
-        terminalRef.current?.write(normalized);
-      },
-      abort: () => {},
-    });
-
-    rt.stdout.pipeTo(terminal, { signal }).catch(() => {});
-    rt.stderr.pipeTo(stderrStream, { signal }).catch(() => {});
+    ioCleanupRef.current?.();
+    const decoder = new TextDecoder();
+    const onTermChunk = (chunk: Uint8Array) => {
+      const text = decoder.decode(chunk);
+      const normalized = text.replace(/\r?\n/g, '\r\n');
+      terminalRef.current?.write(normalized);
+    };
+    rt.stdout.on('data', onTermChunk);
+    rt.stderr.on('data', onTermChunk);
+    ioCleanupRef.current = () => {
+      rt.stdout.off('data', onTermChunk);
+      rt.stderr.off('data', onTermChunk);
+    };
     rt.fs = { 'main.c': code };
 
     const term = terminalRef.current?.getTerminal();
@@ -218,7 +204,6 @@ export default function CodeEditor() {
 
     let stdinBuffer = '';
     const encoder = new TextEncoder();
-    const stdinWriter = rt.stdin.getWriter();
 
     if (onDataHandlerRef.current) {
       onDataHandlerRef.current.dispose();
@@ -243,7 +228,7 @@ export default function CodeEditor() {
       }
       if (data === '\x04') {
         term.write('^D\r\n');
-        stdinWriter.write(encoder.encode('\x04'));
+        void rt.stdin.write(encoder.encode('\x04'));
         stdinBuffer = '';
         return;
       }
@@ -254,7 +239,7 @@ export default function CodeEditor() {
       }
       if (data === '\r') {
         term.write('\r\n');
-        stdinWriter.write(encoder.encode(`${stdinBuffer}\n`));
+        void rt.stdin.write(encoder.encode(`${stdinBuffer}\n`));
         stdinBuffer = '';
       } else if (data === '\u007f') {
         if (stdinBuffer.length > 0) {
@@ -429,7 +414,7 @@ export default function CodeEditor() {
         minHeight: 0,
         display: 'flex',
         flexDirection: 'column',
-        overflow: 'hidden',
+        overflow: 'hidden'
       }}
     >
       <Box
@@ -445,7 +430,7 @@ export default function CodeEditor() {
           flexShrink: 0,
           background:
             'linear-gradient(180deg, rgba(18, 18, 24, 0.9) 0%, rgba(12, 12, 16, 0.6) 100%)',
-          backdropFilter: 'blur(8px)',
+          backdropFilter: 'blur(8px)'
         }}
       >
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
@@ -464,7 +449,7 @@ export default function CodeEditor() {
                   textTransform: 'uppercase',
                   color: '#c7d2fe',
                   background: 'rgba(99, 102, 241, 0.2)',
-                  border: '1px solid rgba(99, 102, 241, 0.45)',
+                  border: '1px solid rgba(99, 102, 241, 0.45)'
                 }}
               >
                 Demo
@@ -486,11 +471,11 @@ export default function CodeEditor() {
               sx={{
                 fontSize: '0.875rem',
                 '& .MuiOutlinedInput-notchedOutline': {
-                  borderColor: 'rgba(148, 163, 184, 0.35)',
+                  borderColor: 'rgba(148, 163, 184, 0.35)'
                 },
                 '&:hover .MuiOutlinedInput-notchedOutline': {
-                  borderColor: 'rgba(148, 163, 184, 0.55)',
-                },
+                  borderColor: 'rgba(148, 163, 184, 0.55)'
+                }
               }}
             >
               <MenuItem value="C">C</MenuItem>
@@ -506,7 +491,7 @@ export default function CodeEditor() {
               fontSize: '0.75rem',
               fontFamily:
                 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-              fontVariantNumeric: 'tabular-nums',
+              fontVariantNumeric: 'tabular-nums'
             }}
           >
             {code.split('\n').length} lines
@@ -521,7 +506,7 @@ export default function CodeEditor() {
             sx={{
               textTransform: 'none',
               borderColor: 'rgba(250, 204, 21, 0.45)',
-              color: '#fcd34d',
+              color: '#fcd34d'
             }}
           >
             Quick run
@@ -540,8 +525,8 @@ export default function CodeEditor() {
                 border: '1px solid rgba(255, 255, 255, 0.12)',
                 boxShadow: '0 10px 25px rgba(34, 197, 94, 0.3)',
                 '&:hover': {
-                  background: 'linear-gradient(135deg, #16a34a 0%, #15803d 100%)',
-                },
+                  background: 'linear-gradient(135deg, #16a34a 0%, #15803d 100%)'
+                }
               }}
             >
               Continue
@@ -557,7 +542,7 @@ export default function CodeEditor() {
             minHeight: 0,
             display: 'flex',
             flexDirection: 'column',
-            overflow: 'hidden',
+            overflow: 'hidden'
           }}
         >
           <Box
@@ -571,7 +556,7 @@ export default function CodeEditor() {
               gap: 0.75,
               flexWrap: 'wrap',
               flexShrink: 0,
-              background: 'rgba(8, 10, 15, 0.35)',
+              background: 'rgba(8, 10, 15, 0.35)'
             }}
           >
             <Button
@@ -613,7 +598,7 @@ export default function CodeEditor() {
                 py: 0.25,
                 minWidth: 0,
                 background: 'linear-gradient(135deg, #6366f1 0%, #7c3aed 100%)',
-                '&:hover': { background: 'linear-gradient(135deg, #5855eb 0%, #6d28d9 100%)' },
+                '&:hover': { background: 'linear-gradient(135deg, #5855eb 0%, #6d28d9 100%)' }
               }}
             >
               4 Run
@@ -656,7 +641,7 @@ export default function CodeEditor() {
               overflow: 'hidden',
               display: 'flex',
               flexDirection: 'column',
-              position: 'relative',
+              position: 'relative'
             }}
           >
             {/* Code Editor - takes remaining space */}
@@ -678,7 +663,7 @@ export default function CodeEditor() {
                   bracketMatching: true,
                   closeBrackets: true,
                   autocompletion: true,
-                  highlightSelectionMatches: true,
+                  highlightSelectionMatches: true
                 }}
               />
             </Box>
@@ -692,7 +677,7 @@ export default function CodeEditor() {
                 backgroundColor: 'rgba(148, 163, 184, 0.15)',
                 position: 'relative',
                 '&:hover': {
-                  backgroundColor: 'rgba(148, 163, 184, 0.3)',
+                  backgroundColor: 'rgba(148, 163, 184, 0.3)'
                 },
                 '&::before': {
                   content: '""',
@@ -701,8 +686,8 @@ export default function CodeEditor() {
                   left: 0,
                   right: 0,
                   height: '8px',
-                  cursor: 'row-resize',
-                },
+                  cursor: 'row-resize'
+                }
               }}
             />
 
@@ -716,7 +701,7 @@ export default function CodeEditor() {
                 justifyContent: 'space-between',
                 borderTop: '1px solid rgba(148, 163, 184, 0.15)',
                 background: 'rgba(9, 11, 16, 0.75)',
-                flexShrink: 0,
+                flexShrink: 0
               }}
             >
               <Typography
@@ -724,7 +709,7 @@ export default function CodeEditor() {
                 sx={{
                   color: 'rgba(255, 255, 255, 0.55)',
                   letterSpacing: '0.12em',
-                  textTransform: 'uppercase',
+                  textTransform: 'uppercase'
                 }}
               >
                 Output
@@ -743,7 +728,7 @@ export default function CodeEditor() {
             flexShrink: 0,
             borderLeft: '1px solid rgba(148, 163, 184, 0.12)',
             background: 'rgba(6, 8, 12, 0.55)',
-            overflow: 'hidden',
+            overflow: 'hidden'
           }}
         >
           <Typography
@@ -755,7 +740,7 @@ export default function CodeEditor() {
               letterSpacing: '0.06em',
               textTransform: 'uppercase',
               color: 'rgba(255,255,255,0.45)',
-              borderBottom: '1px solid rgba(148, 163, 184, 0.1)',
+              borderBottom: '1px solid rgba(148, 163, 184, 0.1)'
             }}
           >
             API order
@@ -773,7 +758,7 @@ export default function CodeEditor() {
               color: 'rgba(255,255,255,0.42)',
               fontSize: '0.62rem',
               lineHeight: 1.45,
-              '& code': { fontSize: '0.58rem', color: '#a5b4fc' },
+              '& code': { fontSize: '0.58rem', color: '#a5b4fc' }
             }}
           >
             <Box component="li" sx={{ mb: 0.5 }}>
@@ -796,7 +781,7 @@ export default function CodeEditor() {
               py: 0.6,
               fontSize: '0.58rem',
               color: 'rgba(255,255,255,0.35)',
-              lineHeight: 1.35,
+              lineHeight: 1.35
             }}
           >
             Quick run still does minimal DAP (debug build); use it to test I/O without clicking 1–4.

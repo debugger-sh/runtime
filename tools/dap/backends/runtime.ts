@@ -15,20 +15,11 @@ export async function createRuntimeBackend(opts: BackendOptions): Promise<Backen
   runtime.fs = opts.fsNode as unknown as any;
 
   const decoder = new TextDecoder();
-  runtime.stdout.pipeTo(
-    new WritableStream<Uint8Array>({
-      write(chunk) {
-        process.stdout.write(chalk.gray(decoder.decode(chunk)));
-      },
-    })
-  );
-  runtime.stderr.pipeTo(
-    new WritableStream<Uint8Array>({
-      write(chunk) {
-        process.stdout.write(chalk.gray(decoder.decode(chunk)));
-      },
-    })
-  );
+  const onIo = (chunk: Uint8Array) => {
+    process.stdout.write(chalk.gray(decoder.decode(chunk)));
+  };
+  runtime.stdout.on('data', onIo);
+  runtime.stderr.on('data', onIo);
 
   const eventCbs: ((e: Json) => void)[] = [];
   const artifactTasks: Promise<void>[] = [];
@@ -61,7 +52,7 @@ export async function createRuntimeBackend(opts: BackendOptions): Promise<Backen
           seq: 0,
           request_seq: typeof request.seq === 'number' ? request.seq : 0,
           success: true,
-          command: request.command ?? 'launch',
+          command: request.command ?? 'launch'
         };
       }
       return runtime.debugger.send(req) as Json;
@@ -76,7 +67,7 @@ export async function createRuntimeBackend(opts: BackendOptions): Promise<Backen
         }
       );
       await Promise.all(artifactTasks);
-    },
+    }
   };
 }
 
