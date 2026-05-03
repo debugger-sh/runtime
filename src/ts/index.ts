@@ -9,6 +9,15 @@ import RustWorker from './worker?worker&inline';
 
 export type Lang = 'c';
 
+export type RunOptions = {
+  /**
+   * Whether or not to enable debugging.
+   * Running with debugging enabled (default) will slow down startup and execution time.
+   * @default true
+   */
+  enableDebugging?: boolean;
+};
+
 /** The runtime ran to completion with the provided `exitCode`. */
 export type CompletedResult = { type: 'completed'; exitCode: number };
 /** The runtime was stopped by calling `stop`. */
@@ -47,14 +56,12 @@ export class Runtime {
   public fs: DirNode = {};
 
   static async create(lang: Lang): Promise<Runtime> {
-    // TODO: Using `wasmBinary` bakes the wasm rust binary into the package
-    // In the future, we should resolve from CDN on prod
     await init({ module_or_path: wasmBinary });
     return new Runtime(lang);
   }
 
   private constructor(lang: Lang) {
-    this.debugger = new Debugger();
+    this.debugger = new Debugger(this);
     this.lang = lang;
   }
 
@@ -65,15 +72,16 @@ export class Runtime {
     this.rejector?.();
   }
 
-  public async run(): Promise<RunResult> {
+  public async run(options?: RunOptions): Promise<RunResult> {
+    options ??= { enableDebugging: true };
     if (this.promise) return this.promise;
-    this.promise = this.execute();
+    this.promise = this.execute(options);
     const result = await this.promise;
     this.promise = undefined;
     return result;
   }
 
-  private async execute(): Promise<RunResult> {
+  private async execute({ enableDebugging = true }: RunOptions): Promise<RunResult> {
     const worker = new RustWorker();
 
     /* Set up handling for stdout/stderr */
@@ -107,7 +115,7 @@ export class Runtime {
         const message: WorkerStart = {
           fs: this.fs,
           stdin_buffer: this.stdin[Internals].buffer,
-          is_debug: true
+          is_debug: enableDebugging
         };
         worker.postMessage(message);
       });
