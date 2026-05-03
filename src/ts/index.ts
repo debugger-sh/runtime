@@ -1,3 +1,5 @@
+import EventEmitter from 'events';
+
 import { StdoutMode, WorkerOut, WorkerStart } from '../../pkg/runtime';
 import init from '../../pkg/runtime';
 import wasmBinary from '../../pkg/runtime_bg.wasm';
@@ -16,42 +18,13 @@ export type ErrorResult = { type: 'error'; error: { type: string; message: strin
 /** The result of calling {@link Runtime.run} */
 export type RunResult = CompletedResult | StoppedResult | ErrorResult;
 
-// TODO: Find a way to re-use the generated types in `pkg/runtime.d.ts`
 export type FsNode = string | DirNode;
 export type DirNode = { [name: string]: FsNode };
 
-/** Handle for writing bytes or UTF-8 text to the program's standard input. */
-export type RuntimeStdin = {
-  write(value: Uint8Array | string): Promise<void>;
-};
-
-/** Handle for receiving stdout or stderr chunks from the program. */
-export type RuntimeOutput = {
-  on(event: 'data', listener: (chunk: Uint8Array) => void): void;
-  off(event: 'data', listener: (chunk: Uint8Array) => void): void;
-};
-
 export class Runtime {
-  private readonly out = new ProcessOutput(1);
-  private readonly err = new ProcessOutput(2);
-  private readonly in = new StdinStream();
-
-  /**
-   * Standard input (fd 0). Call {@link RuntimeStdin.write} with UTF-8 text or raw bytes.
-   *
-   * Any data written before the program finishes is scoped to that run; the buffer is cleared
-   * afterward so a later run does not read leftover stdin.
-   */
-  public readonly stdin: RuntimeStdin = {
-    write: (value) => this.in.write(value)
-  };
-
-  /** Program stdout (fd 1). Subscribe with {@link RuntimeOutput.on}. */
-  public readonly stdout: RuntimeOutput = this.out;
-
-  /** Program stderr (fd 2). Subscribe with {@link RuntimeOutput.on}. */
-  public readonly stderr: RuntimeOutput = this.err;
-
+  public readonly stdout = new Stdout(1);
+  public readonly stderr = new Stdout(2);
+  public readonly stdin = new Stdin();
   public readonly debugger: Debugger;
 
   /** A function which, when called, rejects the ongoing execution */
@@ -104,8 +77,8 @@ export class Runtime {
     const worker = new RustWorker();
 
     /* Set up handling for stdout/stderr */
-    this.out.addWorker(worker);
-    this.err.addWorker(worker);
+    this.stdout[Internals].attach(worker);
+    this.stderr[Internals].attach(worker);
     this.debugger[Internals].attach(worker);
 
     try {
@@ -133,7 +106,7 @@ export class Runtime {
 
         const message: WorkerStart = {
           fs: this.fs,
-          stdin_buffer: this.in.buffer,
+          stdin_buffer: this.stdin[Internals].buffer,
           is_debug: true
         };
         worker.postMessage(message);
@@ -143,50 +116,48 @@ export class Runtime {
       return errorResult(err);
     } finally {
       this.rejector = undefined;
-      this.out.removeWorker(worker);
-      this.err.removeWorker(worker);
-      this.in.clear();
+      this.stdout[Internals].detach(worker);
+      this.stderr[Internals].detach(worker);
+      this.stdin[Internals].clear();
       worker.terminate();
     }
   }
 }
 
-class ProcessOutput implements RuntimeOutput {
-  private readonly listeners = new Set<(chunk: Uint8Array) => void>();
+export class Stdout extends EventEmitter<{ data: [Uint8Array] }> {
   private readonly callback: (event: MessageEvent<WorkerOut>) => void;
 
-  constructor(public readonly mode: StdoutMode) {
+  [Internals]: {
+    attach(worker: Worker): void;
+    detach(worker: Worker): void;
+  };
+
+  constructor(private readonly mode: StdoutMode) {
+    super();
     this.callback = ((event: MessageEvent<WorkerOut>) => {
       const msg = event.data;
       if (msg.type !== 'stdout') return;
       if (msg.mode !== this.mode) return;
       const chunk = msg.data as Uint8Array<ArrayBuffer>;
-      for (const listener of this.listeners) {
-        listener(chunk);
-      }
+      this.emit('data', chunk);
     }).bind(this);
+
+    this[Internals] = {
+      attach: this.attach.bind(this),
+      detach: this.detach.bind(this)
+    };
   }
 
-  on(event: 'data', listener: (chunk: Uint8Array) => void): void {
-    if (event !== 'data') return;
-    this.listeners.add(listener);
-  }
-
-  off(event: 'data', listener: (chunk: Uint8Array) => void): void {
-    if (event !== 'data') return;
-    this.listeners.delete(listener);
-  }
-
-  public addWorker(worker: Worker) {
+  private attach(worker: Worker) {
     worker.addEventListener('message', this.callback);
   }
 
-  public removeWorker(worker: Worker) {
+  private detach(worker: Worker) {
     worker.removeEventListener('message', this.callback);
   }
 }
 
-class StdinStream {
+export class Stdin {
   /**
    * Ring buffer to store stdin data.
    *
@@ -194,34 +165,42 @@ class StdinStream {
    * - One slot is always kept empty to distinguish full from empty
    */
 
-  private static readonly BUFFER_SIZE = 16;
+  private static readonly BUFFER_SIZE = 2048;
   private static readonly HEADER_SIZE = 8; // 2 x i32
-  private static readonly DATA_SIZE = StdinStream.BUFFER_SIZE - StdinStream.HEADER_SIZE;
+  private static readonly DATA_SIZE = Stdin.BUFFER_SIZE - Stdin.HEADER_SIZE;
   private static readonly READ_IDX = 0;
   private static readonly WRITE_IDX = 1;
+  private static encoder = new TextEncoder();
 
-  public readonly buffer = new SharedArrayBuffer(StdinStream.BUFFER_SIZE);
-
-  // Made this to manage indexes easier
+  private readonly buffer = new SharedArrayBuffer(Stdin.BUFFER_SIZE);
   private readonly indices: Int32Array;
   private readonly data: Int8Array;
 
+  [Internals]: {
+    clear(): void;
+    buffer: SharedArrayBuffer;
+  };
+
   constructor() {
     this.indices = new Int32Array(this.buffer, 0, 2);
-    this.data = new Int8Array(this.buffer, StdinStream.HEADER_SIZE);
+    this.data = new Int8Array(this.buffer, Stdin.HEADER_SIZE);
+    this[Internals] = {
+      clear: this.clear.bind(this),
+      buffer: this.buffer
+    };
   }
 
-  public clear() {
+  private clear() {
     this.indices.fill(0);
   }
 
   public async write(value: Uint8Array | string): Promise<void> {
-    const chunk = typeof value === 'string' ? new TextEncoder().encode(value) : value;
+    const chunk = typeof value === 'string' ? Stdin.encoder.encode(value) : value;
     return this.writeBytes(chunk);
   }
 
   private async writeBytes(chunk: Uint8Array): Promise<void> {
-    const { DATA_SIZE, READ_IDX, WRITE_IDX } = StdinStream;
+    const { DATA_SIZE, READ_IDX, WRITE_IDX } = Stdin;
     let offset = 0;
 
     while (offset < chunk.length) {
