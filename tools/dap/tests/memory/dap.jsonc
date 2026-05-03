@@ -91,13 +91,44 @@
       "type": "response",
       "body": {
         "variables": [
-          { "name": "p1", "type": "Point", "memoryReference": "${{p1_addr}}" },
+          {
+            "name": "p1",
+            "type": "Point",
+            "memoryReference": "${{p1_addr}}",
+            "variablesReference": "${{p1}}",
+            "presentationHint": {
+              "byteSize": "${{point_size}}"
+            }
+          },
           {
             "name": "p2",
             "type": "Point",
             "memoryReference": "${{p2_addr}}",
             "variablesReference": "${{p2}}"
           }
+        ]
+      }
+    },
+    {
+      "type": "request",
+      "command": "variables",
+      "arguments": {
+        "variablesReference": "{{p1}}"
+      }
+    },
+    {
+      "type": "response",
+      "body": {
+        "variables": [
+          {
+            "name": "x",
+            "type": "int",
+            "memoryReference": "${{p1_x_addr}}",
+            "presentationHint": {
+              "byteSize": "${{int_size}}"
+            }
+          },
+          { "name": "y", "type": "int", "memoryReference": "${{p1_y_addr}}" }
         ]
       }
     },
@@ -121,6 +152,10 @@
       "type": "request",
       "command": "continue",
       "arguments": { "threadId": "{{thread}}" }
+    },
+    {
+      "type": "expect",
+      "description": ""
     }
   ]
 }

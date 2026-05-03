@@ -5,6 +5,7 @@ import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
+import stripJsonComments from 'strip-json-comments';
 
 import { createLldbBackend } from './backends/lldb.ts';
 import { createRuntimeBackend } from './backends/runtime.ts';
@@ -146,7 +147,7 @@ async function waitForDevBuild() {
 async function readJsonFile<T>(filePath: string): Promise<T> {
   const raw = await readFile(filePath, 'utf8');
   try {
-    return JSON.parse(raw) as T;
+    return JSON.parse(stripJsonComments(raw)) as T;
   } catch (err) {
     throw new Error(`invalid JSON in ${filePath}: ${String(err)}`);
   }
@@ -249,7 +250,8 @@ async function runTest(testName: string, opts: CliOpts): Promise<void> {
   const testStat = await stat(testDir).catch(() => null);
   if (!testStat || !testStat.isDirectory()) throw new Error(`unknown test '${testName}'`);
 
-  const dapPath = path.join(testDir, 'dap.json');
+  const dapPath = path.join(testDir, 'dap.jsonc');
+  if (!existsSync(dapPath)) throw new Error(`missing ${dapPath}`);
   const file = await readJsonFile<TestFile>(dapPath);
   if (!Array.isArray(file.steps)) throw new Error(`${dapPath}: expected top-level steps[]`);
   const testOutputDir = path.join(OUTPUT_DIR, testName);

@@ -5,21 +5,21 @@ Use this tool to run end-to-end Debugger Adapter Protocol (DAP) integration test
 - Run all tests with `npm run tools:dap` (from repo root), or one test with `npm run tools:dap <test-name>`.
 - It is safe (and encouraged) to run this alongside `npm run dev`. This tool will wait for any in-progress builds initiated by `npm run dev` to complete before starting the tests.
 - The harness links the local package into `tools/dap` before running tests.
-- It executes scripted DAP request/response/event flows from `tools/dap/tests/*/dap.json` against a real runtime session.
+- It executes scripted DAP request/response/event flows from `tools/dap/tests/*/dap.jsonc` against a real runtime session (JSON with comments: `//` and `/* */`).
 - For triage, per-test artifacts/log outputs are written to `tools/dap/output/<test-name>/`, including emitted WASM files (`pre.wasm`, `post.wasm`) and derived dumps like `pre.wat`/`post.wat` (and `pre.dwarf` when `llvm-dwarfdump` is available).
 - The command prints step-by-step progress and mismatch details to stdout, and exits non-zero on failures.
 
 ## Test Cases
 
-Each test is a directory under `tools/dap/tests/<test-name>/` with a required `dap.json` file:
+Each test is a directory under `tools/dap/tests/<test-name>/` with a required **`dap.jsonc`** scenario file:
 
-```json
+```jsonc
 {
   "steps": [
     { "type": "request", "command": "initialize", "arguments": {} },
     { "type": "response", "success": true, "command": "initialize", "body": {} },
-    { "type": "event", "event": "initialized", "$timeout": 10000 }
-  ]
+    { "type": "event", "event": "initialized", "$timeout": 10000 },
+  ],
 }
 ```
 
@@ -27,7 +27,7 @@ Each test is a directory under `tools/dap/tests/<test-name>/` with a required `d
 - `response`: matches the previous request response (partial structural match is allowed; include only fields you care about).
 - `event`: waits for a DAP event name (`event` required, optional `body`, optional `$timeout` in ms; default is 1000ms).
 - `expect`: evaluates JavaScript (`run`, required) with prior captures in scope and built-in functions (see below). If `expect` is present, the return value is matched like a `response` body (partial structure, `${{…}}` captures). If `expect` is omitted, only failure is a thrown error or an undefined result.
-- The harness already performs debugger session setup (`initialize` + `initialized`) before your test `steps`; your `dap.json` should only describe scenario-specific behavior.
+- The harness already performs debugger session setup (`initialize` + `initialized`) before your test `steps`; your scenario file should only describe scenario-specific behavior.
 
 ### Placeholder Notation
 
@@ -46,13 +46,13 @@ Each test is a directory under `tools/dap/tests/<test-name>/` with a required `d
 
 1. Create `tools/dap/tests/<new-test>/`.
 2. Add scenario input files needed by runtime in that folder (these are mounted into `runtime.fs` for the test).
-3. Add `tools/dap/tests/<new-test>/dap.json` with ordered `steps`.
+3. Add `tools/dap/tests/<new-test>/dap.jsonc` with ordered `steps`.
 4. Start from an existing test and keep expectations minimal-but-specific (assert only fields that should be stable).
 5. Run `npm run tools:dap -- <new-test>`; inspect `tools/dap/output/<new-test>/` and console mismatch output when iterating.
 
 ## Running Against `lldb-dap` (Golden Reference)
 
-For any test, you can run the same `dap.json` scenario against a real `lldb-dap` subprocess instead of the runtime:
+For any test, you can run the same `dap.jsonc` scenario against a real `lldb-dap` subprocess instead of the runtime:
 
 ```
 npm run tools:dap -- --lldb
@@ -65,7 +65,7 @@ This lets you observe how a reference DAP implementation (the one shipped with X
 How it works:
 
 - The harness compiles each test's `main.{cpp,c,cc}` to a native binary at `tools/dap/output/<test>/lldb/prog` using `xcrun clang++ -g -O0 -fno-inline -fstandalone-debug` (or `clang` for `.c`).
-- It spawns `lldb-dap` over stdio with standard `Content-Length`-framed DAP, auto-injects a `launch` request after `initialize`, then runs your `dap.json` steps unchanged.
+- It spawns `lldb-dap` over stdio with standard `Content-Length`-framed DAP, auto-injects a `launch` request after `initialize`, then runs your scenario steps unchanged.
 - Outgoing `source.path: "/main.cpp"` (the runtime's virtualized path) is rewritten to the absolute path of the on-disk source so `setBreakpoints` resolves correctly.
 - `--lldb` mode is **exploratory**: mismatches are printed in the same diff format as runtime mode, but the process always exits 0. The full request/response/event stream lands in `tools/dap/output/<test>/log.json` regardless of pass/fail — that's the artifact you read to see what lldb-dap actually returned.
 
