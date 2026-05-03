@@ -22,23 +22,22 @@ type UseCodeExecutionResult = {
 };
 
 /**
- * Hook to manage code execution with terminal I/O integration using streams.
+ * Hook to manage code execution with terminal I/O.
  *
  * Handles:
  * - Running code via the Runtime
- * - Piping stdout/stderr streams to the terminal
- * - Capturing stdin from terminal input via stream writer
+ * - Subscribing to stdout/stderr and printing to the terminal
+ * - Sending stdin from terminal input via `rt.stdin.write`
  * - Ctrl+C to stop execution
  * - Ctrl+D for EOF
  * - Ctrl+L to clear terminal
  */
 export function useCodeExecution({
   terminalRef,
-  terminalReady,
+  terminalReady
 }: UseCodeExecutionOptions): UseCodeExecutionResult {
   const [isRunning, setIsRunning] = useState(false);
   const runtimeRef = useRef<Runtime | null>(null);
-  const stdinWriterRef = useRef<WritableStreamDefaultWriter<Uint8Array> | null>(null);
   const isRunningRef = useRef(false);
   const encoderRef = useRef(new TextEncoder());
 
@@ -53,10 +52,10 @@ export function useCodeExecution({
 
     const onData = terminal.onData((data: string) => {
       // Only accept input when code is running
-      if (!isRunningRef.current || !stdinWriterRef.current) return;
+      if (!isRunningRef.current || !runtimeRef.current) return;
 
       const encoder = encoderRef.current;
-      const writer = stdinWriterRef.current;
+      const stdin = runtimeRef.current.stdin;
 
       // Control sequences
       if (data === '\x03') {
@@ -67,7 +66,7 @@ export function useCodeExecution({
       } else if (data === '\x04') {
         // Ctrl+D: Send EOF
         terminal.write('^D\r\n');
-        writer.write(encoder.encode('\x04'));
+        void stdin.write(encoder.encode('\x04'));
         stdinBuffer = '';
         return;
       } else if (data === '\x0c') {
@@ -81,7 +80,7 @@ export function useCodeExecution({
       if (data === '\r') {
         // Enter: send buffered input with newline
         terminal.write('\r\n');
-        writer.write(encoder.encode(`${stdinBuffer}\n`));
+        void stdin.write(encoder.encode(`${stdinBuffer}\n`));
         stdinBuffer = '';
       } else if (data === '\u007f') {
         // Backspace: remove last character
@@ -123,58 +122,28 @@ export function useCodeExecution({
       runtimeRef.current = rt;
       rt.fs = { 'main.c': code };
 
-      // Get stdin writer
-      const writer = rt.stdin.getWriter();
-      stdinWriterRef.current = writer;
-
-      // Create a writable stream that writes to the terminal
       const decoder = new TextDecoder();
-      const createTerminalWritable = () =>
-        new WritableStream<Uint8Array>({
-          write: (chunk) => {
-            const text = decoder.decode(chunk);
-            // Normalize newlines for terminal display
-            const normalized = text.replace(/\r?\n/g, '\r\n');
-            terminalRef.current?.write(normalized);
-          },
-        });
-
-      // Create abort controller for stream cleanup
-      const abortController = new AbortController();
+      const onIo = (chunk: Uint8Array) => {
+        const text = decoder.decode(chunk);
+        const normalized = text.replace(/\r?\n/g, '\r\n');
+        terminalRef.current?.write(normalized);
+      };
+      rt.stdout.on('data', onIo);
+      rt.stderr.on('data', onIo);
 
       // Enable terminal input
       terminalRef.current?.enableInput();
 
       try {
-        // Pipe stdout and stderr to terminal (non-blocking)
-        const stdoutPipe = rt.stdout.pipeTo(createTerminalWritable(), {
-          signal: abortController.signal,
-        });
-        const stderrPipe = rt.stderr.pipeTo(createTerminalWritable(), {
-          signal: abortController.signal,
-        });
-
-        // Run the code
         await rt.run();
-
-        // Abort the pipes after run completes
-        abortController.abort();
-
-        // Wait for pipes to finish (they'll reject due to abort, which is fine)
-        await Promise.allSettled([stdoutPipe, stderrPipe]);
       } catch (error) {
         console.error('Execution error:', error);
         terminalRef.current?.writeln(
           `\r\nError: ${error instanceof Error ? error.message : String(error)}`
         );
       } finally {
-        // Release the writer
-        try {
-          writer.releaseLock();
-        } catch {
-          // Ignore if already released
-        }
-        stdinWriterRef.current = null;
+        rt.stdout.off('data', onIo);
+        rt.stderr.off('data', onIo);
         runtimeRef.current = null;
         isRunningRef.current = false;
         setIsRunning(false);
@@ -191,6 +160,6 @@ export function useCodeExecution({
   return {
     isRunning,
     runCode,
-    stopCode,
+    stopCode
   };
 }

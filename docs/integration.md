@@ -26,29 +26,32 @@ Set the virtual filesystem, then call `run()`. The program sees `/main.c` as its
 
 ```ts
 rt.fs = {
-  'main.c': `#include <iostream>\nint main() { std::cout << "hello\\n"; }`,
+  'main.c': `#include <iostream>\nint main() { std::cout << "hello\\n"; }`
 };
 
 await rt.run();
 ```
 
-**stdout / stderr** are exposed as `ReadableStream<Uint8Array>`:
+**stdout / stderr** use a small event-style API: subscribe with `on('data', …)` and unsubscribe with `off` using the same listener function. Each chunk is a `Uint8Array` of UTF-8 bytes.
 
 ```ts
-rt.stdout.pipeTo(
-  new WritableStream({
-    write(chunk) {
-      console.log(new TextDecoder().decode(chunk));
-    },
-  })
-);
+const decoder = new TextDecoder();
+const onOut = (chunk: Uint8Array) => {
+  console.log(decoder.decode(chunk));
+};
+rt.stdout.on('data', onOut);
+rt.stderr.on('data', onOut);
+
+// When tearing down (optional if the runtime is discarded):
+rt.stdout.off('data', onOut);
+rt.stderr.off('data', onOut);
 ```
 
-**stdin** is a `WritableStream<Uint8Array>`:
+**stdin** exposes `write(value: string | Uint8Array)` (UTF-8 for strings):
 
 ```ts
-const writer = rt.stdin.getWriter();
-writer.write(new TextEncoder().encode('hello\n'));
+await rt.stdin.write('hello\n');
+await rt.stdin.write(new TextEncoder().encode('hello\n'));
 ```
 
 To stop a running program:
@@ -100,15 +103,15 @@ dbg.on('event', (msg: { type: string; event?: string }) => {
     command: 'setBreakpoints',
     arguments: {
       source: { path: '/main.c' },
-      breakpoints: [{ line: 5 }],
-    },
+      breakpoints: [{ line: 5 }]
+    }
   });
 
   dbg.send({
     type: 'request',
     seq: seq++,
     command: 'setExceptionBreakpoints',
-    arguments: { filters: [] },
+    arguments: { filters: [] }
   });
 
   dbg.send({ type: 'request', seq: seq++, command: 'configurationDone', arguments: {} });
@@ -129,7 +132,7 @@ if (msg.type === 'event' && msg.event === 'stopped') {
     type: 'request',
     seq: n++,
     command: 'stackTrace',
-    arguments: { threadId: 1 },
+    arguments: { threadId: 1 }
   });
 
   // get scopes for a frame
@@ -140,7 +143,7 @@ if (msg.type === 'event' && msg.event === 'stopped') {
     type: 'request',
     seq: n++,
     command: 'variables',
-    arguments: { variablesReference: 1 },
+    arguments: { variablesReference: 1 }
   });
 
   // resume

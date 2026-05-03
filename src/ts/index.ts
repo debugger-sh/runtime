@@ -11,10 +11,38 @@ export type Lang = 'c';
 export type FsNode = string | DirNode;
 export type DirNode = { [name: string]: FsNode };
 
+/** Handle for writing bytes or UTF-8 text to the program's standard input. */
+export type RuntimeStdin = {
+  write(value: Uint8Array | string): Promise<void>;
+};
+
+/** Handle for receiving stdout or stderr chunks from the program. */
+export type RuntimeOutput = {
+  on(event: 'data', listener: (chunk: Uint8Array) => void): void;
+  off(event: 'data', listener: (chunk: Uint8Array) => void): void;
+};
+
 export class Runtime {
-  private out = new StdoutStream(1);
-  private err = new StdoutStream(2);
-  private in = new StdinStream();
+  private readonly out = new ProcessOutput(1);
+  private readonly err = new ProcessOutput(2);
+  private readonly in = new StdinStream();
+
+  /**
+   * Standard input (fd 0). Call {@link RuntimeStdin.write} with UTF-8 text or raw bytes.
+   *
+   * Any data written before the program finishes is scoped to that run; the buffer is cleared
+   * afterward so a later run does not read leftover stdin.
+   */
+  public readonly stdin: RuntimeStdin = {
+    write: (value) => this.in.write(value)
+  };
+
+  /** Program stdout (fd 1). Subscribe with {@link RuntimeOutput.on}. */
+  public readonly stdout: RuntimeOutput = this.out;
+
+  /** Program stderr (fd 2). Subscribe with {@link RuntimeOutput.on}. */
+  public readonly stderr: RuntimeOutput = this.err;
+
   public readonly debugger: Debugger;
 
   /** A function which, when called, rejects the ongoing execution */
@@ -35,40 +63,6 @@ export class Runtime {
    * will updating it have any effect on code that is already running.
    */
   public fs: DirNode = {};
-
-  /**
-   * A [WritableStream](https://developer.mozilla.org/en-US/docs/Web/API/WritableStream) for writing to the program's `stdin` (fd 0).
-   *
-   * Note that any previous input pushed to `stdin` will be cleared when the program finishes
-   * running. This is to prevent subsequent runs of a program from seeing `stdin` from the previous one.
-   *
-   * @example
-   * ```ts
-   *  const rt = Runtime.create('c');
-   *
-   *  const encoder = new TextEncoder();
-   *  const writer = rt.stdin.getWriter();
-   *
-   *  writer.write(encoder.encode('hello world\n'));
-   * ```
-   */
-  public get stdin() {
-    return this.in.stream;
-  }
-
-  /**
-   * A [ReadableStream](https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream) for reading the program's `stdout` (fd 1).
-   */
-  public get stdout() {
-    return this.out.stream;
-  }
-
-  /**
-   * A [ReadableStream](https://developer.mozilla.org/en-US/docs/Web/API/ReadableStream) for reading the program's `stderr` (fd 2).
-   */
-  public get stderr() {
-    return this.err.stream;
-  }
 
   static async create(lang: Lang): Promise<Runtime> {
     // TODO: Using `wasmBinary` bakes the wasm rust binary into the package
@@ -131,7 +125,7 @@ export class Runtime {
         const message: WorkerStart = {
           fs: this.fs,
           stdin_buffer: this.in.buffer,
-          is_debug: true,
+          is_debug: true
         };
         worker.postMessage(message);
       });
@@ -147,22 +141,30 @@ export class Runtime {
   }
 }
 
-class StdoutStream {
-  public readonly stream: ReadableStream<Uint8Array<ArrayBuffer>>;
-  private controller?: ReadableStreamDefaultController<Uint8Array<ArrayBuffer>>;
-  private callback: (event: MessageEvent<WorkerOut>) => void;
+class ProcessOutput implements RuntimeOutput {
+  private readonly listeners = new Set<(chunk: Uint8Array) => void>();
+  private readonly callback: (event: MessageEvent<WorkerOut>) => void;
 
   constructor(public readonly mode: StdoutMode) {
-    this.stream = new ReadableStream({
-      start: (controller) => (this.controller = controller),
-    });
-
     this.callback = ((event: MessageEvent<WorkerOut>) => {
       const msg = event.data;
       if (msg.type !== 'stdout') return;
       if (msg.mode !== this.mode) return;
-      this.controller?.enqueue(msg.data as Uint8Array<ArrayBuffer>);
+      const chunk = msg.data as Uint8Array<ArrayBuffer>;
+      for (const listener of this.listeners) {
+        listener(chunk);
+      }
     }).bind(this);
+  }
+
+  on(event: 'data', listener: (chunk: Uint8Array) => void): void {
+    if (event !== 'data') return;
+    this.listeners.add(listener);
+  }
+
+  off(event: 'data', listener: (chunk: Uint8Array) => void): void {
+    if (event !== 'data') return;
+    this.listeners.delete(listener);
   }
 
   public addWorker(worker: Worker) {
@@ -189,16 +191,12 @@ class StdinStream {
   private static readonly WRITE_IDX = 1;
 
   public readonly buffer = new SharedArrayBuffer(StdinStream.BUFFER_SIZE);
-  public readonly stream: WritableStream<Uint8Array>;
 
   // Made this to manage indexes easier
   private readonly indices: Int32Array;
   private readonly data: Int8Array;
 
   constructor() {
-    this.stream = new WritableStream({
-      write: (chunk) => this.write(chunk),
-    });
     this.indices = new Int32Array(this.buffer, 0, 2);
     this.data = new Int8Array(this.buffer, StdinStream.HEADER_SIZE);
   }
@@ -207,7 +205,12 @@ class StdinStream {
     this.indices.fill(0);
   }
 
-  private async write(chunk: Uint8Array): Promise<void> {
+  public async write(value: Uint8Array | string): Promise<void> {
+    const chunk = typeof value === 'string' ? new TextEncoder().encode(value) : value;
+    return this.writeBytes(chunk);
+  }
+
+  private async writeBytes(chunk: Uint8Array): Promise<void> {
     const { DATA_SIZE, READ_IDX, WRITE_IDX } = StdinStream;
     let offset = 0;
 
