@@ -195,11 +195,14 @@ pub struct DebugInfo {
 /// Size in bytes of the `breakpoints` buffer prefix (SP + mode).
 pub const BP_PREFIX_BYTES: usize = 8;
 
-/// Sentinel `mode` (`u32` at byte offset 4, shared as [`i32`] in [`DebugInfo::get_bp_state`] index 1).
-pub const BKPT_MODE_NORMAL: i32 = 0;
-pub const BKPT_MODE_STEP_INTO: i32 = 1;
-pub const BKPT_MODE_STEP_OVER: i32 = 2;
-pub const BKPT_MODE_STEP_OUT: i32 = 3;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum BreakpointMode {
+    Normal = 0,
+    StepInto = 1,
+    StepOver = 2,
+    StepOut = 3,
+}
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub enum WasmLocation {
@@ -297,5 +300,25 @@ impl DebugFunction {
         self.size += size;
         self.layout.push(DebugFrameEntry { offset, location });
         offset
+    }
+}
+
+impl TryFrom<i32> for BreakpointMode {
+    type Error = ();
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Normal),
+            1 => Ok(Self::StepInto),
+            2 => Ok(Self::StepOver),
+            3 => Ok(Self::StepOut),
+            _ => Err(()),
+        }
+    }
+}
+
+impl From<BreakpointMode> for i32 {
+    fn from(value: BreakpointMode) -> Self {
+        value as i32
     }
 }

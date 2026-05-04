@@ -1,7 +1,4 @@
-use crate::types::{
-    BKPT_MODE_NORMAL, BKPT_MODE_STEP_INTO, BKPT_MODE_STEP_OUT, BKPT_MODE_STEP_OVER, DebugInfo,
-    WorkerOut,
-};
+use crate::types::{BreakpointMode, DebugInfo, WorkerOut};
 use crate::util::{warning, weak_error};
 use js_sys::{Object, Reflect, WebAssembly};
 use wasm_bindgen::JsCast;
@@ -37,7 +34,7 @@ fn create_stack_pointer(
 
     let global = WebAssembly::Global::new(&global_desc, &size_bytes)?;
     state.set_index(0, size_bytes.as_f64().unwrap() as i32);
-    state.set_index(1, BKPT_MODE_NORMAL);
+    state.set_index(1, BreakpointMode::Normal.into());
     Ok(global)
 }
 
@@ -136,20 +133,21 @@ impl Debuggee {
     ///
     /// This is the main entry point called from instrumented WASM code.
     pub fn bkpt(&mut self, index: usize) -> bool {
-        let mode = js_sys::Atomics::load(&self.state, 1).unwrap_or(BKPT_MODE_NORMAL);
+        let mode = js_sys::Atomics::load(&self.state, 1)
+            .ok()
+            .and_then(|value| BreakpointMode::try_from(value).ok())
+            .unwrap_or(BreakpointMode::Normal);
 
-        if mode == BKPT_MODE_NORMAL && !self.bkpt_enabled(index) {
+        if mode == BreakpointMode::Normal && !self.bkpt_enabled(index) {
             return false;
         }
 
         let sp = self.stack_pointer.value().as_f64().unwrap() as i32;
 
         let stop = match mode {
-            BKPT_MODE_NORMAL => true,
-            BKPT_MODE_STEP_INTO => true,
-            BKPT_MODE_STEP_OVER => sp >= self.last_sp,
-            BKPT_MODE_STEP_OUT => sp > self.last_sp,
-            _ => self.bkpt_enabled(index),
+            BreakpointMode::Normal | BreakpointMode::StepInto => true,
+            BreakpointMode::StepOver => sp >= self.last_sp,
+            BreakpointMode::StepOut => sp > self.last_sp,
         };
 
         if !stop {
