@@ -1,4 +1,4 @@
-use crate::types::{BreakpointMode, DebugInfo, WorkerOut};
+use crate::types::{BreakpointMode, DebugInfo, PauseReason, WorkerOut};
 use crate::util::{warning, weak_error};
 use js_sys::{Object, Reflect, WebAssembly};
 use wasm_bindgen::JsCast;
@@ -116,8 +116,15 @@ impl Debuggee {
     }
 
     /// Check if a breakpoint at the given index is enabled
-    pub fn bkpt_enabled(&self, index: usize) -> bool {
+    fn bkpt_enabled(&self, index: usize) -> bool {
         self.flags.get_index(index as u32) != 0
+    }
+
+    fn bkpt_mode(&self) -> BreakpointMode {
+        let mode = self.state.get_index(1);
+        BreakpointMode::try_from(mode)
+            .ok()
+            .unwrap_or(BreakpointMode::Normal)
     }
 
     /// Blocks until the stack-pointer field changes from its current value (e.g. cleared by `continue_`).
@@ -133,24 +140,18 @@ impl Debuggee {
     ///
     /// This is the main entry point called from instrumented WASM code.
     pub fn bkpt(&mut self, index: usize) -> bool {
-        let mode = js_sys::Atomics::load(&self.state, 1)
-            .ok()
-            .and_then(|value| BreakpointMode::try_from(value).ok())
-            .unwrap_or(BreakpointMode::Normal);
-
-        if mode == BreakpointMode::Normal && !self.bkpt_enabled(index) {
-            return false;
-        }
-
+        let mode = self.bkpt_mode();
         let sp = self.stack_pointer.value().as_f64().unwrap() as i32;
 
-        let stop = match mode {
-            BreakpointMode::Normal | BreakpointMode::StepInto => true,
+        let is_bkpt = self.bkpt_enabled(index);
+        let is_step = match mode {
+            BreakpointMode::Normal => false,
+            BreakpointMode::StepInto => true,
             BreakpointMode::StepOver => sp >= self.last_sp,
             BreakpointMode::StepOut => sp > self.last_sp,
         };
 
-        if !stop {
+        if !is_step && !is_bkpt {
             return false;
         }
 
@@ -176,7 +177,14 @@ impl Debuggee {
         self.last_sp = sp;
         js_sys::Atomics::store(&self.state, 0, sp).unwrap();
 
-        WorkerOut::Breakpoint.send();
+        WorkerOut::Paused {
+            reason: if is_step {
+                PauseReason::Step
+            } else {
+                PauseReason::Breakpoint
+            },
+        }
+        .send();
         self.wait_for_resume();
         true
     }

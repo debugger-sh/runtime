@@ -91,9 +91,9 @@ pub enum WorkerOut<'a> {
         name: String,
     },
 
-    /// Sent when execution pauses (maps to DAP `stopped`).
+    /// Indicate that execution has paused
     #[serde(rename = "breakpoint")]
-    Breakpoint,
+    Paused { reason: PauseReason },
     #[serde(rename = "stop")]
     Stop { exit_code: i32 },
 }
@@ -198,10 +198,21 @@ pub const BP_PREFIX_BYTES: usize = 8;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum BreakpointMode {
+    /// Stop on locations that have breakpoints set (default)
     Normal = 0,
+    /// Stop on the next location unconditionally
     StepInto = 1,
+    /// Stop on the next location in the same or an older frame
     StepOver = 2,
+    /// Stop on the next location in an older frame
     StepOut = 3,
+}
+
+#[derive(Clone, Copy, Debug, Tsify, Serialize_repr)]
+#[repr(u8)]
+pub enum PauseReason {
+    Breakpoint = 0,
+    Step = 1,
 }
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
