@@ -211,6 +211,14 @@ fn value_to_le_bytes(value: gimli::Value, len: usize) -> Vec<u8> {
     out
 }
 
+fn read_ptr(info: &DebugInfo, addr: u64) -> u64 {
+    u32::from_le_bytes(read_main_memory(info, addr, 4).try_into().unwrap_or([0; 4])) as u64
+}
+
+fn addr_piece(address: u64) -> gimli::Piece<R> {
+    gimli::Piece { size_in_bits: None, bit_offset: None, location: gimli::Location::Address { address } }
+}
+
 fn format_scalar(bytes: &[u8], encoding: gimli::DwAte, byte_size: u64) -> String {
     let size = byte_size as usize;
     if bytes.len() < size {
