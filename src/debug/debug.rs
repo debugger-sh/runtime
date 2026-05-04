@@ -2,8 +2,8 @@ use std::rc::Rc;
 
 use crate::debug::{Type, TypeGraph, Variable, get_location, get_variables as debug_get_variables};
 use crate::types::{
-    BKPT_MODE_NORMAL, BKPT_MODE_STEP_INTO, BKPT_MODE_STEP_OUT, BKPT_MODE_STEP_OVER,
-    DebugFunction, DebugInfo, GlobalAddress, WasmLocation,
+    BKPT_MODE_NORMAL, BKPT_MODE_STEP_INTO, BKPT_MODE_STEP_OUT, BKPT_MODE_STEP_OVER, DebugFunction,
+    DebugInfo, GlobalAddress, WasmLocation,
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
@@ -34,11 +34,6 @@ impl Debugger {
         let state = info.get_bp_state();
         let types = Rc::from(TypeGraph::new(&info.dwarf));
         Self { info, state, types }
-    }
-
-    /// Breakpoint mode that was active when the worker last chose to pause (SAB index 3).
-    pub fn last_pause_mode(&self) -> i32 {
-        js_sys::Atomics::load(&self.state, 3).unwrap_or(BKPT_MODE_NORMAL)
     }
 
     fn read_wasm_value(

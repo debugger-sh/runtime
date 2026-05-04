@@ -20,6 +20,7 @@ pub struct Debuggee {
     stack: js_sys::DataView,
     state: js_sys::Int32Array,
     flags: js_sys::Uint8Array,
+    last_sp: i32,
 }
 
 fn create_stack_pointer(
@@ -37,8 +38,6 @@ fn create_stack_pointer(
     let global = WebAssembly::Global::new(&global_desc, &size_bytes)?;
     state.set_index(0, size_bytes.as_f64().unwrap() as i32);
     state.set_index(1, BKPT_MODE_NORMAL);
-    state.set_index(2, 0);
-    state.set_index(3, BKPT_MODE_NORMAL);
     Ok(global)
 }
 
@@ -56,6 +55,7 @@ impl Debuggee {
             stack,
             state,
             flags,
+            last_sp: 0,
             info,
         }
     }
@@ -103,8 +103,8 @@ impl Debuggee {
             Function::new_typed_with_env(
                 store,
                 &env,
-                |env: FunctionEnvMut<Debuggee>, index: i32| {
-                    env.data().bkpt(index as usize);
+                |mut env: FunctionEnvMut<Debuggee>, index: i32| {
+                    env.data_mut().bkpt(index as usize);
                 },
             ),
         );
@@ -135,21 +135,20 @@ impl Debuggee {
     /// Decide whether execution should pause at this instrumented breakpoint.
     ///
     /// This is the main entry point called from instrumented WASM code.
-    pub fn bkpt(&self, index: usize) -> bool {
+    pub fn bkpt(&mut self, index: usize) -> bool {
         let mode = js_sys::Atomics::load(&self.state, 1).unwrap_or(BKPT_MODE_NORMAL);
 
         if mode == BKPT_MODE_NORMAL && !self.bkpt_enabled(index) {
             return false;
         }
 
-        let last_sp = js_sys::Atomics::load(&self.state, 2).unwrap_or(0);
         let sp = self.stack_pointer.value().as_f64().unwrap() as i32;
 
         let stop = match mode {
             BKPT_MODE_NORMAL => true,
             BKPT_MODE_STEP_INTO => true,
-            BKPT_MODE_STEP_OVER => sp >= last_sp,
-            BKPT_MODE_STEP_OUT => sp > last_sp,
+            BKPT_MODE_STEP_OVER => sp >= self.last_sp,
+            BKPT_MODE_STEP_OUT => sp > self.last_sp,
             _ => self.bkpt_enabled(index),
         };
 
@@ -176,9 +175,7 @@ impl Debuggee {
         // and instead only do it when a breakpoint is actually hit
         self.stack.set_uint32_endian(sp as usize, pc.0 as u32, true);
 
-        js_sys::Atomics::store(&self.state, 3, mode).unwrap();
-        js_sys::Atomics::store(&self.state, 1, BKPT_MODE_NORMAL).unwrap();
-        js_sys::Atomics::store(&self.state, 2, sp).unwrap();
+        self.last_sp = sp;
         js_sys::Atomics::store(&self.state, 0, sp).unwrap();
 
         WorkerOut::Breakpoint.send();
