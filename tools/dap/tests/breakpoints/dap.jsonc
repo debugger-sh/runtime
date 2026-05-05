@@ -1,0 +1,60 @@
+/**
+ * The goal of this test is to enforce how breakpoints resolve.
+ * Typically, if a breakpoint cannot be resolved at the requested source line,
+ * it will match the next executable statement.
+ *
+ * This test confirms this by placing breakpoints on function signature lines
+ * and whitespace and seeing that they correctly are placed on the next executable line.
+ */
+{
+  "steps": [
+    {
+      "type": "request",
+      "command": "setBreakpoints",
+      "arguments": {
+        "source": { "path": "main.cpp" },
+        "breakpoints": [{ "line": 1 }, { "line": 2 }, { "line": 9 }]
+      }
+    },
+    {
+      "type": "response",
+      "body": {
+        "breakpoints": {
+          "$array.contains": [
+            { "verified": true, "line": 5 },
+            { "verified": true, "line": 5 },
+            { "verified": true, "line": 11 }
+          ]
+        }
+      }
+    },
+    {
+      "type": "request",
+      "command": "configurationDone",
+      "arguments": {}
+    },
+    {
+      "type": "event",
+      "event": "stopped",
+      "body": { "reason": "breakpoint", "threadId": "${{thread}}" }
+    },
+    {
+      "type": "request",
+      "command": "stackTrace",
+      "arguments": { "threadId": "{{thread}}" }
+    },
+    {
+      "type": "response",
+      "body": {
+        "stackFrames": {
+          "$array.contains": [{ "line": 11 }]
+        }
+      }
+    },
+    {
+      "type": "request",
+      "command": "continue",
+      "arguments": { "threadId": "{{thread}}" }
+    }
+  ]
+}
