@@ -141,6 +141,10 @@ pub struct DebugInfo {
     /// List of locations where breakpoints can be placed.
     /// Each location has had instrumentation code generated for it,
     /// and has an entry in [DebugInfo::breakpoints].
+    ///
+    /// This differs from [Dwarf::locations] in that the latter may
+    /// return locations for which no code has been emitted, and thus
+    /// no breakpoints may be placed.
     pub locations: Vec<Location>,
 
     /// This buffer encodes execution state and breakpoint metadata in a

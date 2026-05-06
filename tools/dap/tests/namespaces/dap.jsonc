@@ -1,0 +1,101 @@
+{
+  "steps": [
+    {
+      "type": "request",
+      "command": "setBreakpoints",
+      "arguments": {
+        "source": { "path": "main.cpp" },
+        "breakpoints": [{ "line": 16 }]
+      }
+    },
+    {
+      "type": "response",
+      "body": {
+        "breakpoints": {
+          "$array.contains": [{ "line": 16, "verified": true }]
+        }
+      }
+    },
+    {
+      "type": "request",
+      "command": "configurationDone",
+      "arguments": {}
+    },
+    {
+      "type": "event",
+      "event": "stopped",
+      "body": {
+        "reason": "breakpoint",
+        "threadId": "${{thread}}"
+      }
+    },
+    {
+      "type": "request",
+      "command": "stackTrace",
+      "arguments": { "threadId": "{{thread}}" }
+    },
+    {
+      "type": "response",
+      "body": {
+        "stackFrames": {
+          "$array.contains": [{ "id": "${{mainFrame}}", "name": "main" }]
+        }
+      }
+    },
+    {
+      "type": "request",
+      "command": "scopes",
+      "arguments": { "frameId": "{{mainFrame}}" }
+    },
+    {
+      "type": "response",
+      "body": {
+        "scopes": {
+          "$array.contains": [
+            {
+              "name": "Locals",
+              "variablesReference": "${{locals}}"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "request",
+      "command": "variables",
+      "arguments": {
+        "variablesReference": "{{locals}}"
+      }
+    },
+    {
+      "type": "response",
+      "body": {
+        "variables": {
+          "$array.contains": [
+            {
+              "name": "deep_chrono",
+              "type": "std::chrono::time_point<std::chrono::system_clock, std::chrono::duration<long long, std::ratio<1, 1000000000> > >"
+            },
+            {
+              "name": "namespaced",
+              "type": "custom::Widget"
+            },
+            {
+              "name": "via_typedef",
+              "type": "custom::WidgetTypedef"
+            },
+            {
+              "name": "via_using",
+              "type": "custom::WidgetUsing"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "request",
+      "command": "continue",
+      "arguments": { "threadId": "{{thread}}" }
+    }
+  ]
+}
