@@ -5,7 +5,7 @@
       "command": "setBreakpoints",
       "arguments": {
         "source": { "path": "main.cpp" },
-        "breakpoints": [{ "line": 11 }, { "line": 2 }]
+        "breakpoints": [{ "line": 10 }, { "line": 6 }]
       }
     },
     {
@@ -13,8 +13,8 @@
       "body": {
         "breakpoints": {
           "$array.contains": [
-            { "line": 11, "verified": true },
-            { "line": 2, "verified": true }
+            { "line": 10, "verified": true },
+            { "line": 6, "verified": true }
           ]
         }
       }
@@ -25,9 +25,34 @@
       "arguments": {}
     },
     {
+      /** Stop on line 10 and step over to line 11 */
       "type": "event",
       "event": "stopped",
       "body": { "reason": "breakpoint", "threadId": "${{thread}}" }
+    },
+    {
+      "type": "request",
+      "command": "stackTrace",
+      "arguments": { "threadId": "{{thread}}" }
+    },
+    {
+      "type": "response",
+      "body": {
+        "stackFrames": {
+          "$array.contains": [{ "line": 10 }]
+        }
+      }
+    },
+    {
+      "type": "request",
+      "command": "next",
+      "arguments": { "threadId": "{{thread}}" }
+    },
+    {
+      /** Stop on line 11 and step over to line 12 */
+      "type": "event",
+      "event": "stopped",
+      "body": { "reason": "step", "threadId": "{{thread}}" }
     },
     {
       "type": "request",
@@ -44,57 +69,11 @@
     },
     {
       "type": "request",
-      "command": "stepOut",
+      "command": "next",
       "arguments": { "threadId": "{{thread}}" }
     },
     {
-      "type": "event",
-      "event": "stopped",
-      "body": { "reason": "breakpoint", "threadId": "{{thread}}" }
-    },
-    {
-      "type": "request",
-      "command": "stackTrace",
-      "arguments": { "threadId": "{{thread}}" }
-    },
-    {
-      "type": "response",
-      "body": {
-        "stackFrames": {
-          "$array.contains": [{ "line": 2 }, { "line": 6 }, { "line": 11 }]
-        }
-      }
-    },
-    {
-      "type": "request",
-      "command": "stepOut",
-      "arguments": { "threadId": "{{thread}}" }
-    },
-    {
-      "type": "event",
-      "event": "stopped",
-      "body": { "reason": "step", "threadId": "{{thread}}" }
-    },
-    {
-      "type": "request",
-      "command": "stackTrace",
-      "arguments": { "threadId": "{{thread}}" }
-    },
-    {
-      "type": "response",
-      "body": {
-        "stackFrames": {
-          "$array.contains": [{ "line": 7 }, { "line": 11 }],
-          "$array.excludes": [{ "line": 2 }]
-        }
-      }
-    },
-    {
-      "type": "request",
-      "command": "stepOut",
-      "arguments": { "threadId": "{{thread}}" }
-    },
-    {
+      /* Stop on line 12 and step over to line 13, hitting the line 6 breakpoint in the process */
       "type": "event",
       "event": "stopped",
       "body": { "reason": "step", "threadId": "{{thread}}" }
@@ -109,13 +88,86 @@
       "body": {
         "stackFrames": {
           "$array.contains": [{ "line": 12 }],
+          "$array.excludes": [{ "line": 2 }]
+        }
+      }
+    },
+    {
+      "type": "request",
+      "command": "next",
+      "arguments": { "threadId": "{{thread}}" }
+    },
+    {
+      /** Hit the breakpoint on line 6, step over to line 7 */
+      "type": "event",
+      "event": "stopped",
+      "body": { "reason": "breakpoint", "threadId": "{{thread}}" }
+    },
+    {
+      "type": "request",
+      "command": "stackTrace",
+      "arguments": { "threadId": "{{thread}}" }
+    },
+    {
+      "type": "response",
+      "body": {
+        "stackFrames": {
+          "$array.contains": [{ "line": 6 }, { "line": 12 }]
+        }
+      }
+    },
+    {
+      "type": "request",
+      "command": "next",
+      "arguments": { "threadId": "{{thread}}" }
+    },
+    {
+      /* Stop on line 7, step over to line 13 */
+      "type": "event",
+      "event": "stopped",
+      "body": { "reason": "step", "threadId": "{{thread}}" }
+    },
+    {
+      "type": "request",
+      "command": "stackTrace",
+      "arguments": { "threadId": "{{thread}}" }
+    },
+    {
+      "type": "response",
+      "body": {
+        "stackFrames": {
+          "$array.contains": [{ "line": 7 }, { "line": 12 }]
+        }
+      }
+    },
+    {
+      "type": "request",
+      "command": "next",
+      "arguments": { "threadId": "{{thread}}" }
+    },
+    {
+      /* Stop on line 13, step over to line 14 */
+      "type": "event",
+      "event": "stopped",
+      "body": { "reason": "step", "threadId": "{{thread}}" }
+    },
+    {
+      "type": "request",
+      "command": "stackTrace",
+      "arguments": { "threadId": "{{thread}}" }
+    },
+    {
+      "type": "response",
+      "body": {
+        "stackFrames": {
+          "$array.contains": [{ "line": 13 }],
           "$array.excludes": [{ "line": 7 }]
         }
       }
     },
     {
       "type": "request",
-      "command": "stepOut",
+      "command": "next",
       "arguments": { "threadId": "{{thread}}" }
     },
     {
@@ -132,8 +184,7 @@
       "type": "response",
       "body": {
         "stackFrames": {
-          "$array.contains": [{ "line": 17 }],
-          "$array.excludes": [{ "line": 12 }]
+          "$array.contains": [{ "line": 14 }]
         }
       }
     },

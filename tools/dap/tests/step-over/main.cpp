@@ -3,16 +3,18 @@ void baz(int v) {
 }
 
 void bar(int v) {
-  baz(v);
   int w = v + 1;
 }
 
 void foo(int a) {
-  bar(a);
-  int x = a + 3;
+  int x = a + 1;
+  baz(x);
+  bar(x);
+  int y = x + 2;
 }
 
 int main() {
-  foo(1);
+  int seed = 1;
+  foo(seed);
   return 0;
 }
