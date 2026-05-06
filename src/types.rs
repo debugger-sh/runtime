@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
-use serde_repr::Serialize_repr;
+use serde_repr::{Deserialize_repr, Serialize_repr};
 use std::collections::HashMap;
 use tsify::Tsify;
 use wasm_bindgen::JsValue;
 use wasmer::{MemoryType, Pages};
 use web_sys::DedicatedWorkerGlobalScope;
 
-use crate::debug::dwarf::{DieReference, Dwarf};
+use crate::debug::dwarf::{DieReference, Dwarf, Location};
 
 // ============================================================================
 // Types
@@ -91,9 +91,9 @@ pub enum WorkerOut<'a> {
         name: String,
     },
 
-    /// Sent when execution pauses
-    #[serde(rename = "breakpoint")]
-    Breakpoint,
+    /// Indicate that execution has paused
+    #[serde(rename = "paused")]
+    Paused { reason: PauseReason },
     #[serde(rename = "stop")]
     Stop { exit_code: i32 },
 }
@@ -109,16 +109,6 @@ impl<'a> WorkerOut<'a> {
             )
             .expect("post_message succeeded");
     }
-}
-
-#[derive(Debug, Clone, Tsify, Serialize, Deserialize)]
-pub struct LocationInfo {
-    /// Index into [DebugInfo::files]
-    pub file: usize,
-    pub line: usize,
-    pub col: usize,
-    /// Byte offset into the WASM code section for instrumentation
-    pub address: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,6 +138,11 @@ pub struct DebugInfo {
     /// List of debuggable functions, sorted by low_pc
     pub functions: Vec<DebugFunction>,
 
+    /// List of locations where breakpoints can be placed.
+    /// Each location has had instrumentation code generated for it,
+    /// and has an entry in [DebugInfo::breakpoints].
+    pub locations: Vec<Location>,
+
     /// This buffer encodes execution state and breakpoint metadata in a
     /// compact, fixed layout. All fields are little-endian.
     ///
@@ -167,7 +162,7 @@ pub struct DebugInfo {
     /// │        │              │     2 → Step over                            │
     /// │        │              │     3 → Step out                             │
     /// │        │              │                                              │
-    /// │ 8      │ u8[N]        │ Breakpoint Counts                            │
+    /// │ 8      │ u8[N]        │ Breakpoint flags                             │
     /// │        │              │   One byte per breakpoint location.          │
     /// │        │              │   Each entry counts how many times the       │
     /// │        │              │   corresponding breakpoint has been set.     │
@@ -176,7 +171,7 @@ pub struct DebugInfo {
     ///
     /// Notes:
     /// - `N` is the number of breakpoint locations being tracked.
-    /// - The breakpoint array begins immediately at offset 8 and is densely packed.
+    /// - Breakpoint flags begin at offset [`BP_PREFIX_BYTES`] and are densely packed.
     ///
     #[serde(with = "serde_wasm_bindgen::preserve")]
     pub breakpoints: js_sys::SharedArrayBuffer,
@@ -192,8 +187,28 @@ pub struct DebugInfo {
     pub dwarf: Dwarf,
 }
 
-/// Size in bytes of the `breakpoints` buffer prefix.
+/// Size in bytes of the `breakpoints` buffer prefix (SP + mode).
 pub const BP_PREFIX_BYTES: usize = 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum BreakpointMode {
+    /// Stop on locations that have breakpoints set (default)
+    Normal = 0,
+    /// Stop on the next location unconditionally
+    StepInto = 1,
+    /// Stop on the next location in the same or an older frame
+    StepOver = 2,
+    /// Stop on the next location in an older frame
+    StepOut = 3,
+}
+
+#[derive(Clone, Copy, Debug, Tsify, Serialize_repr, Deserialize_repr)]
+#[repr(u8)]
+pub enum PauseReason {
+    Breakpoint = 0,
+    Step = 1,
+}
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub enum WasmLocation {
@@ -291,5 +306,25 @@ impl DebugFunction {
         self.size += size;
         self.layout.push(DebugFrameEntry { offset, location });
         offset
+    }
+}
+
+impl TryFrom<i32> for BreakpointMode {
+    type Error = ();
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Normal),
+            1 => Ok(Self::StepInto),
+            2 => Ok(Self::StepOver),
+            3 => Ok(Self::StepOut),
+            _ => Err(()),
+        }
+    }
+}
+
+impl From<BreakpointMode> for i32 {
+    fn from(value: BreakpointMode) -> Self {
+        value as i32
     }
 }

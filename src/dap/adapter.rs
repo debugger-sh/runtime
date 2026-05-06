@@ -9,7 +9,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::dap::types::{ProtocolMessage, VariablesMap};
 use crate::debug::Debugger;
-use crate::types::DebugInfo;
+use crate::types::{DebugInfo, PauseReason};
 
 struct DapState {
     seq_counter: i64,
@@ -84,8 +84,12 @@ impl DapState {
         let bps: Vec<_> = lines
             .iter()
             .map(|line| {
-                let verified = dbg.set_breakpoint(source, *line);
-                json!({ "verified": verified, "line": line })
+                let location = dbg.set_breakpoint(source, *line);
+                if let Some(location) = location {
+                    json!({ "verified": true, "line": location.line })
+                } else {
+                    json!({ "verified": false })
+                }
             })
             .collect();
         Ok(json!({ "breakpoints": bps }))
@@ -199,12 +203,10 @@ impl DapState {
         Ok(json!({ "allThreadsContinued": true }))
     }
 
-    // TODO: need to agree with Fabio on how to expose step(mode) on Debugger to set sentinel[1] before resuming.
-    // For now these fall through to a plain continue so the program doesn't hang.
     fn handle_next(&mut self) -> Result<Value> {
         self.vars.clear();
         if let Some(dbg) = self.debugger() {
-            dbg.continue_();
+            dbg.step_over();
         }
         Ok(json!({}))
     }
@@ -212,7 +214,7 @@ impl DapState {
     fn handle_step_in(&mut self) -> Result<Value> {
         self.vars.clear();
         if let Some(dbg) = self.debugger() {
-            dbg.continue_();
+            dbg.step_into();
         }
         Ok(json!({}))
     }
@@ -220,7 +222,7 @@ impl DapState {
     fn handle_step_out(&mut self) -> Result<Value> {
         self.vars.clear();
         if let Some(dbg) = self.debugger() {
-            dbg.continue_();
+            dbg.step_out();
         }
         Ok(json!({}))
     }
@@ -341,19 +343,26 @@ impl DapAdapter {
 
             match msg_type.as_str() {
                 "debug" => {
-                    let info_val = js_sys::Reflect::get(&data, &"info".into())
+                    let info = js_sys::Reflect::get(&data, &"info".into())
                         .expect("debug message has info field");
-                    let info: DebugInfo = serde_wasm_bindgen::from_value(info_val)
-                        .expect("DebugInfo deserialization");
+                    let info: DebugInfo =
+                        serde_wasm_bindgen::from_value(info).expect("DebugInfo deserialization");
                     state.borrow_mut().debugger = Some(Debugger::new(info));
                     try_emit_initialized(&state);
                 }
-                "breakpoint" => {
+                "paused" => {
+                    let reason = js_sys::Reflect::get(&data, &"reason".into())
+                        .expect("debug message has reason field");
+                    let reason: PauseReason = serde_wasm_bindgen::from_value(reason)
+                        .expect("PauseReason deserialization");
                     emit_event(
                         &state,
                         "stopped",
                         Some(json!({
-                            "reason": "breakpoint",
+                            "reason": match reason {
+                                PauseReason::Breakpoint => "breakpoint",
+                                PauseReason::Step => "step"
+                            },
                             "threadId": 1,
                             "allThreadsStopped": true,
                         })),

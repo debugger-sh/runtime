@@ -1,5 +1,5 @@
-use crate::types::{DebugInfo, WorkerOut};
-use crate::util::{warning, weak_error};
+use crate::types::{BreakpointMode, DebugInfo, PauseReason, WorkerOut};
+use crate::util::{supports_wasm_multi_memory, warning, weak_error};
 use js_sys::{Object, Reflect, WebAssembly};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -17,6 +17,7 @@ pub struct Debuggee {
     stack: js_sys::DataView,
     state: js_sys::Int32Array,
     flags: js_sys::Uint8Array,
+    last_sp: i32,
 }
 
 fn create_stack_pointer(
@@ -33,7 +34,7 @@ fn create_stack_pointer(
 
     let global = WebAssembly::Global::new(&global_desc, &size_bytes)?;
     state.set_index(0, size_bytes.as_f64().unwrap() as i32);
-    state.set_index(1, 0);
+    state.set_index(1, BreakpointMode::Normal.into());
     Ok(global)
 }
 
@@ -51,6 +52,7 @@ impl Debuggee {
             stack,
             state,
             flags,
+            last_sp: 0,
             info,
         }
     }
@@ -98,8 +100,8 @@ impl Debuggee {
             Function::new_typed_with_env(
                 store,
                 &env,
-                |env: FunctionEnvMut<Debuggee>, index: i32| {
-                    env.data().bkpt(index as usize);
+                |mut env: FunctionEnvMut<Debuggee>, index: i32| {
+                    env.data_mut().bkpt(index as usize);
                 },
             ),
         );
@@ -114,8 +116,15 @@ impl Debuggee {
     }
 
     /// Check if a breakpoint at the given index is enabled
-    pub fn bkpt_enabled(&self, index: usize) -> bool {
+    fn bkpt_enabled(&self, index: usize) -> bool {
         self.flags.get_index(index as u32) != 0
+    }
+
+    fn bkpt_mode(&self) -> BreakpointMode {
+        let mode = self.state.get_index(1);
+        BreakpointMode::try_from(mode)
+            .ok()
+            .unwrap_or(BreakpointMode::Normal)
     }
 
     /// Blocks until the stack-pointer field changes from its current value (e.g. cleared by `continue_`).
@@ -127,20 +136,33 @@ impl Debuggee {
         weak_error!(js_sys::Atomics::wait(&self.state, 0, current));
     }
 
-    /// Check if breakpoint is enabled, and if so, wait for resume.
+    /// Decide whether execution should pause at this instrumented breakpoint.
     ///
     /// This is the main entry point called from instrumented WASM code.
-    pub fn bkpt(&self, index: usize) -> bool {
-        if !self.bkpt_enabled(index) {
-            return false;
-        }
-
+    pub fn bkpt(&mut self, index: usize) -> bool {
         let sp = self.stack_pointer.value().as_f64().unwrap() as i32;
+
+        let reason = if self.bkpt_enabled(index) {
+            PauseReason::Breakpoint
+        } else {
+            let mode = self.bkpt_mode();
+            let should_pause = match mode {
+                BreakpointMode::Normal => false,
+                BreakpointMode::StepInto => true,
+                BreakpointMode::StepOver => sp >= self.last_sp,
+                BreakpointMode::StepOut => sp > self.last_sp,
+            };
+            if !should_pause {
+                return false;
+            }
+            PauseReason::Step
+        };
+
         let pc = self
             .info
-            .dwarf
-            .location_at(index)
-            .map(|location| location.address());
+            .locations
+            .get(index)
+            .map(|location| location.address);
 
         let Some(pc) = pc else {
             warning!(
@@ -155,8 +177,10 @@ impl Debuggee {
         // and instead only do it when a breakpoint is actually hit
         self.stack.set_uint32_endian(sp as usize, pc.0 as u32, true);
 
+        self.last_sp = sp;
         js_sys::Atomics::store(&self.state, 0, sp).unwrap();
-        WorkerOut::Breakpoint.send();
+
+        WorkerOut::Paused { reason }.send();
         self.wait_for_resume();
         true
     }

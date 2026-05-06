@@ -65,6 +65,34 @@ export function match(expected: Json, actual: Json, at = ''): MatchResult {
       );
     }
 
+    const prefix = expected['$array.prefix'];
+    if (prefix) {
+      if (!Array.isArray(prefix)) return fail('array.prefix requires array value');
+      if (!Array.isArray(actual)) return fail(`expected array, got ${tn(actual)}`);
+      if (prefix.length > actual.length)
+        return fail(
+          `expected prefix of length ${prefix.length}, but actual array has length ${actual.length}`
+        );
+      return allOf(prefix.map((e, i) => match(e, actual[i], `${at}[${i}]`)));
+    }
+
+    const excludes = expected['$array.excludes'];
+    if (excludes !== undefined) {
+      if (!Array.isArray(excludes)) return fail('array.excludes requires array value');
+      if (!Array.isArray(actual)) return fail(`expected array, got ${tn(actual)}`);
+
+      for (let fi = 0; fi < excludes.length; fi++) {
+        const forbidden = excludes[fi];
+        for (let i = 0; i < actual.length; i++) {
+          const result = match(forbidden, actual[i], `${at}[${i}]`);
+          if (result.success) {
+            return fail(`array.excludes[${fi}] matched actual[${i}]: ${JSON.stringify(forbidden)}`);
+          }
+        }
+      }
+      return succeed();
+    }
+
     return null;
   }
 
