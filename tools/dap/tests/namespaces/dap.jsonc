@@ -74,7 +74,7 @@
           "$array.contains": [
             {
               "name": "deep_chrono",
-              "type": "std::chrono::time_point<std::chrono::system_clock, std::chrono::duration<long long, std::ratio<1, 1000000000> > >"
+              "type": "std::chrono::time_point<std::chrono::system_clock, std::chrono::duration<long long, std::ratio<1LL, 1000000000LL> > >"
             },
             {
               "name": "namespaced",

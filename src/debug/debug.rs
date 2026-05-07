@@ -107,7 +107,6 @@ impl Debugger {
         } else {
             std::path::Path::new("/").join(target)
         };
-        let mut verified = false;
 
         // If a breakpoint cannot be set on the requested line,
         // it will be set on the next executable statement.

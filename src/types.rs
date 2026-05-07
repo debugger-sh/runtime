@@ -14,7 +14,7 @@ use crate::debug::dwarf::{DieReference, Dwarf, Location};
 
 /// Byte offset in the WASM code section
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Tsify, Serialize, Deserialize,
+    Default, Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Tsify, Serialize, Deserialize,
 )]
 #[serde(transparent)]
 pub struct GlobalAddress(pub u64);

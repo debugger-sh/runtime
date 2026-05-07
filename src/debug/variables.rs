@@ -112,14 +112,21 @@ impl Variable {
                 let label = name.as_deref().unwrap_or("");
                 format!("{label} {{ ... }}")
             }
-            Some(TypeDeclaration::Referential { target, kind }) => match kind {
+            Some(TypeDeclaration::Referential { target, kind, .. }) => match kind {
                 ReferenceKind::Pointer => match self.address() {
                     Some(addr) => addr.to_string(),
                     None => "<unavailable>".into(),
                 },
                 ReferenceKind::Reference | ReferenceKind::Temporary => {
-                    let Some(addr) = self.address() else { return "<unavailable>".into() };
-                    Variable::new(self.name.clone(), vec![addr_piece(read_ptr(info, addr.0))], self.ty.child(*target)).display(info)
+                    let Some(addr) = self.address() else {
+                        return "<unavailable>".into();
+                    };
+                    Variable::new(
+                        self.name.clone(),
+                        vec![addr_piece(read_ptr(info, addr.0))],
+                        self.ty.child(*target),
+                    )
+                    .display(info)
                 }
             },
             _ => "<unavailable>".into(),
@@ -132,29 +139,46 @@ impl Variable {
     pub fn children(&self, info: &DebugInfo) -> Vec<Variable> {
         match self.ty.resolved() {
             Some(TypeDeclaration::Structure { members, .. }) => {
-                let Some(base) = self.address() else { return Vec::new() };
+                let Some(base) = self.address() else {
+                    return Vec::new();
+                };
                 let mut out = Vec::with_capacity(members.len());
                 for member in members {
-                    let Some(name) = member.name.clone() else { continue };
+                    let Some(name) = member.name.clone() else {
+                        continue;
+                    };
                     let offset = match &member.location {
-                        Some(super::MemberLocation::Offset(o)) => *o,
+                        Some(super::Value::Constant(o)) => *o,
                         None => 0,
-                        Some(super::MemberLocation::Expr(_)) => continue,
+                        Some(super::Value::Expr(_)) => continue,
                     };
                     let addr = (base.0 as i64).wrapping_add(offset) as u64;
-                    out.push(Variable::new(name, vec![addr_piece(addr)], self.ty.child(member.ty)));
+                    out.push(Variable::new(
+                        name,
+                        vec![addr_piece(addr)],
+                        self.ty.child(member.ty),
+                    ));
                 }
                 out
             }
-            Some(TypeDeclaration::Referential { target, kind }) => {
+            Some(TypeDeclaration::Referential { target, kind, .. }) => {
                 let is_ptr = matches!(kind, ReferenceKind::Pointer);
-                let Some(addr) = self.address() else { return Vec::new() };
+                let Some(addr) = self.address() else {
+                    return Vec::new();
+                };
                 let target_addr = read_ptr(info, addr.0);
-                if is_ptr && target_addr == 0 { return Vec::new(); }
+                if is_ptr && target_addr == 0 {
+                    return Vec::new();
+                }
                 let target_type = self.ty.child(*target);
                 let piece = addr_piece(target_addr);
-                if is_ptr && matches!(target_type.resolved(), Some(TypeDeclaration::Scalar { .. })) {
-                    return vec![Variable::new(format!("*{}", self.name), vec![piece], target_type)];
+                if is_ptr && matches!(target_type.resolved(), Some(TypeDeclaration::Scalar { .. }))
+                {
+                    return vec![Variable::new(
+                        format!("*{}", self.name),
+                        vec![piece],
+                        target_type,
+                    )];
                 }
                 Variable::new(self.name.clone(), vec![piece], target_type).children(info)
             }
@@ -223,7 +247,11 @@ fn read_ptr(info: &DebugInfo, addr: u64) -> u64 {
 }
 
 fn addr_piece(address: u64) -> gimli::Piece<R> {
-    gimli::Piece { size_in_bits: None, bit_offset: None, location: gimli::Location::Address { address } }
+    gimli::Piece {
+        size_in_bits: None,
+        bit_offset: None,
+        location: gimli::Location::Address { address },
+    }
 }
 
 fn format_scalar(bytes: &[u8], encoding: gimli::DwAte, byte_size: u64) -> String {

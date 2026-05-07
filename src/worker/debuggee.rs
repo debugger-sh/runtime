@@ -1,5 +1,5 @@
 use crate::types::{BreakpointMode, DebugInfo, PauseReason, WorkerOut};
-use crate::util::{supports_wasm_multi_memory, warning, weak_error};
+use crate::util::{warning, weak_error};
 use js_sys::{Object, Reflect, WebAssembly};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
