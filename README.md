@@ -1,11 +1,11 @@
-# @jtrb/runtime
+# debugger-sh
 
 A browser-based C++ runtime powered by WebAssembly. Compile and run C++ programs entirely in the browser, with stdin/stdout/stderr I/O and a built-in debugger.
 
 ## Installation
 
 ```bash
-npm install @jtrb/runtime
+npm install debugger-sh
 ```
 
 > **Requirements:** Your bundler or server must set these HTTP headers, as the runtime uses `SharedArrayBuffer` for stdin:
@@ -22,7 +22,7 @@ npm install @jtrb/runtime
 ## Quick start
 
 ```ts
-import { Runtime } from '@jtrb/runtime';
+import { Runtime } from 'debugger-sh';
 
 // 1. Create the runtime (loads and compiles the WASM module)
 const rt = await Runtime.create('c');
@@ -179,7 +179,7 @@ rt.debugger.on('event', handler); // receive async DAP events
 
 ## Example project
 
-See the [`demo/`](./demo) app for a Next.js + MUI example that wires up CodeMirror 6, xterm.js, and `@jtrb/runtime` into a working in-browser IDE. Start from [`demo/README.md`](./demo/README.md) and [`demo/components/CodeEditor.tsx`](./demo/components/CodeEditor.tsx).
+See the [`demo/`](./demo) app for a Next.js + MUI example that wires up CodeMirror 6, xterm.js, and `debugger-sh` into a working in-browser IDE. Start from [`demo/README.md`](./demo/README.md) and [`demo/components/CodeEditor.tsx`](./demo/components/CodeEditor.tsx).
 
 ---
 
@@ -204,6 +204,6 @@ To run the built-in demo:
 ```bash
 npm link
 cd demo
-npm link @jtrb/runtime
+npm link debugger-sh
 npm run dev
 ```
