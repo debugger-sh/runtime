@@ -39,14 +39,3 @@ jobs:
 
       - name: Lint
         run: npx eslint src/
-
-      - name: Install demo dependencies
-        run: npm ci
-        working-directory: demo
-
-      - name: Link runtime into demo
-        run: npm link
-
-      - name: Build demo
-        run: npm link @jtrb/runtime && npm run build
-        working-directory: demo
