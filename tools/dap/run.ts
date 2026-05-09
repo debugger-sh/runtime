@@ -369,9 +369,9 @@ async function main() {
   const opts = parseCli(process.argv.slice(2));
 
   if (!opts.lldb) {
-    if (!existsSync(path.join(ROOT, 'dist/runtime.js')))
-      die(`missing dist/runtime.js. Run 'npm run build' first.`);
     await waitForDevBuild();
+    if (!existsSync(path.join(ROOT, 'dist/debugger-sh.js')))
+      die(`missing dist/debugger-sh.js. Run 'npm run build' first.`);
     await ensureRuntimeLinked();
   } else {
     logInfo(`${chalk.bold('--lldb')}: running against ${chalk.bold('lldb-dap')}`);
