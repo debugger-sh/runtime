@@ -9,15 +9,6 @@ import RustWorker from './worker?worker&inline';
 
 export type Lang = 'c';
 
-export type RunOptions = {
-  /**
-   * Whether or not to enable debugging.
-   * Running with debugging enabled (default) will slow down startup and execution time.
-   * @default true
-   */
-  enableDebugging?: boolean;
-};
-
 /** The engine ran to completion with the provided `exitCode`. */
 export type CompletedResult = { type: 'completed'; exitCode: number };
 /** The engine was stopped by calling `stop`. */
@@ -72,16 +63,15 @@ export class Engine {
     this.rejector?.();
   }
 
-  public async run(options?: RunOptions): Promise<RunResult> {
-    options ??= { enableDebugging: true };
+  public async run(): Promise<RunResult> {
     if (this.promise) return this.promise;
-    this.promise = this.execute(options);
+    this.promise = this.execute();
     const result = await this.promise;
     this.promise = undefined;
     return result;
   }
 
-  private async execute({ enableDebugging = true }: RunOptions): Promise<RunResult> {
+  private async execute(): Promise<RunResult> {
     const worker = new RustWorker();
 
     /* Set up handling for stdout/stderr */
@@ -115,7 +105,7 @@ export class Engine {
         const message: WorkerStart = {
           fs: this.fs,
           stdin_buffer: this.stdin[Internals].buffer,
-          is_debug: enableDebugging
+          is_debug: this.debugger.enabled
         };
         worker.postMessage(message);
       });
