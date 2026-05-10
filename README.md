@@ -48,25 +48,6 @@ await engine.run();
 
 ---
 
-## Wiring stdin
-
-`engine.stdin.write()` accepts a UTF-8 string or `Uint8Array`. Programs read via `cin`, `scanf`, `read()`, etc.
-
-```ts
-await engine.stdin.write('42\n');
-await engine.stdin.write(new TextEncoder().encode('42\n'));
-```
-
----
-
-## Stopping a program
-
-```ts
-engine.stop(); // terminates the worker; engine.run() resolves
-```
-
----
-
 ## Full API
 
 ```ts
@@ -85,6 +66,17 @@ engine.stop(); // void               — kills the worker; run() resolves with {
 engine.debugger.send(message); // DAP request, returns response synchronously
 engine.debugger.on('event', fn); // async DAP events
 engine.debugger.on('artifact', fn); // download artifacts emitted by the engine
+```
+
+---
+
+## Wiring stdin
+
+`engine.stdin.write()` accepts a UTF-8 string or `Uint8Array`. Programs read via `cin`, `scanf`, `read()`, etc.
+
+```ts
+await engine.stdin.write('42\n');
+await engine.stdin.write(new TextEncoder().encode('42\n'));
 ```
 
 ---
