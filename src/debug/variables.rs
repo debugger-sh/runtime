@@ -56,25 +56,6 @@ pub fn get_location(die: &Die<'_>, pc: GlobalAddress) -> Option<Expression<R>> {
     die.expression(gimli::DW_AT_location, pc)
 }
 
-/// Provides custom expansion for a [`Variable`].
-///
-/// The first registered provider whose [`matches`](Self::matches) returns
-/// `true` for a variable wins; its [`children`](Self::children) result replaces
-/// the default structure/pointer expansion. Providers that only need to alter
-/// matching can rely on the default `children` implementation, which yields the
-/// raw structural view.
-pub trait VariableProvider {
-    fn matches(&self, value: &Variable) -> bool;
-
-    fn children(&self, value: &Variable, dbg: &Debugger) -> Vec<Variable> {
-        value.children()
-    }
-
-    fn display(&self, value: &Variable, dbg: &Debugger) -> String {
-        value.display()
-    }
-}
-
 /// A typed value backed by one or more DWARF location pieces.
 ///
 /// `pieces` describes where the bytes live (memory address, embedded value,
@@ -125,6 +106,12 @@ impl Variable {
 
     /// Renders this value to a string
     pub fn display(&self) -> String {
+        for formatter in &self.dbg.formatters {
+            if formatter.matches(self) {
+                return formatter.display(self);
+            }
+        }
+
         match self.ty.resolved() {
             Some(TypeDeclaration::Scalar {
                 byte_size,
@@ -164,8 +151,6 @@ impl Variable {
     }
 
     /// Expands a compound value into named child variables.
-    ///
-    /// Returns an empty vector for scalars / unsupported aggregates.
     pub fn children(&self) -> Vec<Variable> {
         match self.ty.resolved() {
             Some(TypeDeclaration::Structure { members, .. }) => {
@@ -208,16 +193,14 @@ impl Variable {
             _ => Vec::new(),
         }
     }
-}
 
-// Reusable for various formatter that follow the same access pattern
-pub trait VariableSliceExt {
-    fn find(&self, name: &str) -> Option<&Variable>;
-}
-
-impl VariableSliceExt for [Variable] {
-    fn find(&self, name: &str) -> Option<&Variable> {
-        self.iter().find(|v| v.name() == name)
+    pub fn synthetic_children(&self) -> Vec<Variable> {
+        for formatter in &self.dbg.formatters {
+            if formatter.matches(self) {
+                return formatter.children(self);
+            }
+        }
+        self.children()
     }
 }
 

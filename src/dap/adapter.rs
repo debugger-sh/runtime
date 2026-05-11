@@ -158,17 +158,12 @@ impl DapState {
             .context("Unknown variablesReference")?
             .clone();
         let dbg = self.debugger().context("No debugger attached")?;
-        // Display + children must be precomputed: dispatching through `dbg`
-        // borrows `self` immutably, which conflicts with `self.vars.allocate`
-        // in the loop.
-        let computed: Vec<(String, Vec<Variable>)> = entries
-            .iter()
-            .map(|var| (dbg.display(var), dbg.children(var)))
-            .collect();
 
         let mut variables: Vec<Value> = Vec::with_capacity(entries.len());
-        for (var, (display, children)) in entries.iter().zip(computed) {
+
+        for var in entries {
             let type_name = var.type_name();
+            let children = var.synthetic_children();
             let sub_ref = if children.is_empty() {
                 0
             } else {
@@ -177,7 +172,7 @@ impl DapState {
 
             let mut v = json!({
                 "name": var.name(),
-                "value": display,
+                "value": var.display(),
                 "type": type_name,
                 "variablesReference": sub_ref,
             });

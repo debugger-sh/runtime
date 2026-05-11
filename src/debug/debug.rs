@@ -1,9 +1,8 @@
 use std::rc::{Rc, Weak};
 
 use crate::debug::dwarf::Location;
-use crate::debug::{
-    Type, TypeGraph, Variable, VariableProvider, get_location, get_variables as debug_get_variables,
-};
+use crate::debug::formatters::VariableProvider;
+use crate::debug::{Type, TypeGraph, Variable, get_location, get_variables as debug_get_variables};
 use crate::types::{BreakpointMode, DebugFunction, DebugInfo, GlobalAddress, WasmLocation};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
@@ -28,7 +27,7 @@ pub struct Debugger {
     info: DebugInfo,
     types: Rc<TypeGraph>,
     state: js_sys::Int32Array,
-    formatters: Vec<Box<dyn VariableProvider>>,
+    pub(crate) formatters: Vec<Box<dyn VariableProvider>>,
 }
 
 impl Debugger {
@@ -54,30 +53,6 @@ impl Debugger {
     /// is used.
     pub fn add_formatter(&mut self, provider: Box<dyn VariableProvider>) {
         self.formatters.push(provider);
-    }
-
-    /// Returns the children of `var`, dispatching through the first registered
-    /// formatter whose `matches()` predicate accepts the variable; otherwise
-    /// falls back to the default expansion.
-    pub fn children(&self, var: &Variable) -> Vec<Variable> {
-        for f in &self.formatters {
-            if f.matches(var) {
-                return f.children(var, self);
-            }
-        }
-        var.children()
-    }
-
-    /// Renders the DAP `value` field for `var`, dispatching through the first
-    /// registered formatter whose `matches()` predicate accepts the variable;
-    /// otherwise falls back to the default scalar/struct/pointer rendering.
-    pub fn display(&self, var: &Variable) -> String {
-        for f in &self.formatters {
-            if f.matches(var) {
-                return f.display(var, self);
-            }
-        }
-        var.display()
     }
 
     fn read_wasm_value(
