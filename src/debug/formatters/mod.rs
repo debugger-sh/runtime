@@ -53,12 +53,6 @@ impl ChildCounts {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub enum ChildKind {
-    Indexed,
-    Named,
-}
-
 /// Provides custom presentation and expansion for a [Variable].
 ///
 /// The first registered formatter whose [matches](Self::matches) method returns `true`
