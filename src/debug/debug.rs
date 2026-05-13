@@ -47,12 +47,11 @@ impl Debugger {
         })
     }
 
-    /// Registers a [`VariableProvider`]. Providers are consulted in registration
-    /// order; the first whose `matches()` predicate accepts the variable wins.
-    /// If none match, the default structural expansion ([`Variable::children`])
-    /// is used.
-    pub fn add_formatter(&mut self, provider: Box<dyn VariableFormatter>) {
-        self.formatters.push(provider);
+    /// Registers a [`VariableFormatter`]. Formatters are consulted in registration
+    /// order; the first whose `matches()` predicate accepts the variable owns the
+    /// formatted view for that variable.
+    pub fn add_formatter(&mut self, formatter: Box<dyn VariableFormatter>) {
+        self.formatters.push(formatter);
     }
 
     fn read_wasm_value(
