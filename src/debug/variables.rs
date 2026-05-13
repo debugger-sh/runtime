@@ -1,15 +1,13 @@
-use std::rc::Rc;
+use std::{ops::Range, rc::Rc};
 
 use crate::{
     debug::{
         Debugger, ReferenceKind, Type, TypeDeclaration,
         dwarf::{Die, R, Visit},
+        formatters::{ChildCounts, VariableFormatter},
     },
     types::{DebugInfo, GlobalAddress},
 };
-
-#[allow(unused_imports)]
-use crate::debug::formatters::VariableFormatter;
 
 use gimli::Reader;
 use gimli::read::Expression;
@@ -89,6 +87,14 @@ impl Variable {
 
     pub fn ty(&self) -> &Type {
         &self.ty
+    }
+
+    fn formatter(&self) -> Option<&dyn VariableFormatter> {
+        self.dbg
+            .formatters
+            .iter()
+            .find(|formatter| formatter.matches(self))
+            .map(|formatter| formatter.as_ref())
     }
 
     /// Returns the address of this variable.
@@ -220,14 +226,39 @@ impl Variable {
         }
     }
 
-    /// Returns the children of this variable as if it were an array.
+    /// Returns the number of children this variable has.
+    pub fn num_children(&self) -> anyhow::Result<ChildCounts> {
+        if let Some(formatter) = self.formatter() {
+            return formatter.num_children(self);
+        }
+
+        Ok(match self.ty.resolved() {
+            Some(TypeDeclaration::Structure { members, .. }) => ChildCounts::named(
+                members
+                    .iter()
+                    .filter(|member| member.name.is_some())
+                    .count(),
+            ),
+            _ => ChildCounts::named(self.children().len()),
+        })
+    }
+
+    /// Returns the raw named children for this variable within `range`.
+    fn raw_named_children(&self, range: Range<usize>) -> Vec<Variable> {
+        self.children()
+            .into_iter()
+            .skip(range.start)
+            .take(range.end.saturating_sub(range.start))
+            .collect()
+    }
+
+    /// Returns the raw indexed children for this variable within `range`.
     ///
-    /// `start` is the index of the first child to retrieve, and `count` is how many to fetch.
-    /// Fewer than `count` elements may be returned if the debugger is unable to fetch that many
+    /// Fewer elements may be returned if the debugger is unable to fetch that many
     /// due to OOB accesses or known array bounds.
     ///
     /// For pointer types, this will treat a `T*` as if it were a `T[]`.
-    pub fn indexed_children(&self, start: usize, count: usize) -> Vec<Variable> {
+    pub(crate) fn raw_indexed_children(&self, range: Range<usize>) -> Vec<Variable> {
         match self.ty.resolved() {
             Some(TypeDeclaration::Referential { target, kind, .. })
                 if matches!(kind, ReferenceKind::Pointer) =>
@@ -252,12 +283,16 @@ impl Variable {
 
                 let mut result = Vec::new();
 
-                for i in start..start + count {
-                    // Compute start address of element
-                    let offset = base.0 as usize + i * elem_size;
+                for i in range.start..range.end {
+                    let Some(offset) = i
+                        .checked_mul(elem_size)
+                        .and_then(|offset| (base.0 as usize).checked_add(offset))
+                    else {
+                        break;
+                    };
 
                     // Ensure that entire element is in-bounds
-                    if offset + elem_size >= self.dbg.info().memory.byte_size() {
+                    if offset.saturating_add(elem_size) > self.dbg.info().memory.byte_size() {
                         break;
                     }
 
@@ -273,8 +308,12 @@ impl Variable {
             _ => {
                 // For all other types, let's simply query the children and return a slice.
                 // Note that this will be inefficient for large arrays, but simpler to implement
-                let children = self.formatted_children();
-                children.into_iter().skip(start).take(count).collect()
+                let children = self.children();
+                children
+                    .into_iter()
+                    .skip(range.start)
+                    .take(range.end.saturating_sub(range.start))
+                    .collect()
             }
         }
     }
@@ -283,31 +322,36 @@ impl Variable {
     ///
     /// Be careful calling this inside of a [VariableFormatter::display] implementation
     /// that you do not cause an infinite loop.
-    pub fn formatted_display(&self) -> String {
-        for formatter in &self.dbg.formatters {
-            if formatter.matches(self)
-                && let Some(result) = formatter.display(self)
-            {
-                return result;
-            }
+    pub fn formatted_display(&self) -> anyhow::Result<String> {
+        if let Some(formatter) = self.formatter() {
+            return formatter.display(self);
         }
 
-        self.display()
+        Ok(self.display())
     }
 
-    /// Expands this variable into its children any matching [VariableFormatter].
+    /// Returns indexed children within `range`.
     ///
-    /// Be careful calling this inside of a [VariableFormatter::children] implementation
+    /// Be careful calling this inside of a [VariableFormatter::indexed_children] implementation
     /// that you do not cause an infinite loop.
-    pub fn formatted_children(&self) -> Vec<Variable> {
-        for formatter in &self.dbg.formatters {
-            if formatter.matches(self)
-                && let Some(result) = formatter.children(self)
-            {
-                return result;
-            }
+    pub fn indexed_children(&self, range: Range<usize>) -> anyhow::Result<Vec<Variable>> {
+        if let Some(formatter) = self.formatter() {
+            return formatter.indexed_children(self, range);
         }
-        self.children()
+
+        Ok(self.raw_indexed_children(range))
+    }
+
+    /// Returns named children within `range`.
+    ///
+    /// Be careful calling this inside of a [VariableFormatter::named_children] implementation
+    /// that you do not cause an infinite loop.
+    pub fn named_children(&self, range: Range<usize>) -> anyhow::Result<Vec<Variable>> {
+        if let Some(formatter) = self.formatter() {
+            return formatter.named_children(self, range);
+        }
+
+        Ok(self.raw_named_children(range))
     }
 }
 
