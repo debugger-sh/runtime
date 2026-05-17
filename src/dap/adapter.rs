@@ -11,10 +11,11 @@ use crate::dap::types::{ProtocolMessage, VariableReference, VariablesMap};
 use crate::debug::formatters::ChildCounts;
 use crate::debug::{Debugger, Variable};
 use crate::types::{DebugInfo, PauseReason};
+use crate::util::Ref;
 
 struct DapState {
     seq_counter: i64,
-    debugger: Option<Rc<Debugger>>,
+    debugger: Option<Ref<Debugger>>,
     /// `initialize` request was handled and the client received the capabilities response.
     client_initialized: bool,
     /// We emitted `initialized` for this debug session (once per worker / run).

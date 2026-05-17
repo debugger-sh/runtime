@@ -1,7 +1,4 @@
-use std::{
-    ops::Range,
-    rc::{Rc, Weak},
-};
+use std::ops::Range;
 
 use crate::{
     debug::{
@@ -10,6 +7,7 @@ use crate::{
         formatters::{ChildCounts, VariableFormatter},
     },
     types::{DebugInfo, GlobalAddress},
+    util::WeakRef,
 };
 
 use gimli::Reader;
@@ -67,7 +65,7 @@ pub fn get_location(die: &Die<'_>, pc: GlobalAddress) -> Option<Expression<R>> {
 /// register, …); `ty` describes how to interpret them.
 #[derive(Clone)]
 pub struct Variable {
-    pub(crate) dbg: Weak<Debugger>,
+    pub(crate) dbg: WeakRef<Debugger>,
     pub(crate) name: String,
     pub(crate) pieces: Vec<gimli::Piece<R>>,
     pub(crate) ty: Type,
@@ -75,13 +73,7 @@ pub struct Variable {
 
 impl Variable {
     fn dbg(&self) -> Option<&Debugger> {
-        let Some(rc) = self.dbg.upgrade() else {
-            crate::util::warning!("Attempt to access variable outside of debugging context");
-            return None;
-        };
-        // Note: we assume here that if the debugger has not been dropped (which the above guard checks)
-        // then it will live long enough to allow any subsequent operations to complete.
-        Some(unsafe { &*Rc::as_ptr(&rc) })
+        self.dbg.as_deref()
     }
 
     /// Duplicates the variable with a new name, contents, and type.

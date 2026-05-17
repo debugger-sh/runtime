@@ -1,3 +1,6 @@
+use std::ops::Deref;
+use std::rc::{Rc, Weak};
+
 #[doc(hidden)]
 macro_rules! __out {
     ($log_fn:path, $($arg:tt)*) => {{
@@ -11,6 +14,7 @@ macro_rules! __out {
         );
     }};
 }
+
 pub(crate) use __out;
 
 /// Prints a formatted string to the JavaScript console.
@@ -74,4 +78,56 @@ pub(crate) fn supports_wasm_multi_memory() -> bool {
         0x02, 0x00, 0x01, // memory min=1
     ];
     js_sys::WebAssembly::validate(&js_sys::Uint8Array::from(MULTI_MEMORY_PROBE)).unwrap_or(false)
+}
+
+// ============================================================================
+// References
+// ============================================================================
+
+/// Represents a shared reference to a long-lived value.
+///
+/// Normal Rust shared references (Rc<T>) will not deallocate T while there
+/// are still references to it, whether weak or strong references. This is
+/// problematic for our codebase, as we will pass around objects which hold weak
+/// references to the JavaScript side, creating a potential for large memory leaks.
+///
+/// Paired with [WeakRef], we circumvent this problem by holding a shared reference
+/// to a Box<T> which will properly deallocate its contents when the shared reference
+/// count reaches 0. Think of this as a lightweight alternative to `Rc<T>`.
+#[derive(Clone)]
+pub struct Ref<T>(Rc<Box<T>>);
+
+/// Represents a weak reference to a long-lived shared value.
+pub struct WeakRef<T>(Weak<Box<T>>);
+
+impl<T> Ref<T> {
+    pub fn new_cyclic(data: impl FnOnce(&WeakRef<T>) -> T) -> Self {
+        Ref(Rc::new_cyclic(|weak| {
+            Box::new(data(&WeakRef(weak.clone())))
+        }))
+    }
+}
+
+impl<T> Deref for Ref<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> Clone for WeakRef<T> {
+    fn clone(&self) -> Self {
+        WeakRef(self.0.clone())
+    }
+}
+
+impl<T> WeakRef<T> {
+    pub fn as_deref(&self) -> Option<&T> {
+        let ptr = self.0.as_ptr();
+        if ptr.is_null() {
+            return None;
+        }
+        Some(unsafe { &**ptr })
+    }
 }

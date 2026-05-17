@@ -1,9 +1,10 @@
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 
 use crate::debug::dwarf::Location;
 use crate::debug::formatters::VariableFormatter;
 use crate::debug::{Type, TypeGraph, Variable, get_location, get_variables as debug_get_variables};
 use crate::types::{BreakpointMode, DebugFunction, DebugInfo, GlobalAddress, WasmLocation};
+use crate::util::{Ref, WeakRef};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsCast;
 
@@ -23,7 +24,7 @@ pub struct StackFrame {
 /// Main-thread debugger that operates on shared memory from an attached worker.
 /// Constructed from `DebugInfo` received via the worker's `debug` message.
 pub struct Debugger {
-    me: Weak<Self>,
+    me: WeakRef<Self>,
     info: DebugInfo,
     types: Rc<TypeGraph>,
     state: js_sys::Int32Array,
@@ -31,12 +32,12 @@ pub struct Debugger {
 }
 
 impl Debugger {
-    pub fn new(info: DebugInfo) -> Rc<Self> {
-        Rc::new_cyclic(|me| {
+    pub fn new(info: DebugInfo) -> Ref<Debugger> {
+        Ref::new_cyclic(|me| {
             let state = info.get_bp_state();
             let types = Rc::from(TypeGraph::new(&info.dwarf));
             let mut dbg = Self {
-                me: me.clone(),
+                me: WeakRef::clone(me),
                 info,
                 state,
                 types,
