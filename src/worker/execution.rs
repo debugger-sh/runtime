@@ -17,8 +17,7 @@ use wasmer_wasix::{
 use web_sys::DedicatedWorkerGlobalScope;
 
 use super::debuggee::Debuggee;
-use crate::debug::instrument::{InstrumenterResult, instrument_wasm};
-use crate::types::{StdoutMode, WorkerOut};
+use crate::types::StdoutMode;
 
 use super::io::{Stdin, Stdout};
 use super::runtime::JsRuntime;
@@ -27,7 +26,6 @@ use std::fmt::Debug;
 
 pub struct Execution {
     pub fs: mem_fs::FileSystem,
-    pub stdin_buffer: js_sys::SharedArrayBuffer,
 }
 
 pub struct Step<'a> {
@@ -37,14 +35,14 @@ pub struct Step<'a> {
     binary: Option<String>,
     sysroot: Option<String>,
     union_fs: Option<Box<dyn FileSystem>>,
-    debug: bool,
+    stdin_buffer: Option<SharedArrayBuffer>,
+    debuggee: Option<Debuggee>,
 }
 
 impl Execution {
-    pub fn new(stdin_buffer: SharedArrayBuffer) -> Self {
+    pub fn new() -> Self {
         Self {
             fs: mem_fs::FileSystem::default(),
-            stdin_buffer,
         }
     }
 
@@ -55,7 +53,8 @@ impl Execution {
             binary: None,
             sysroot: None,
             union_fs: None,
-            debug: false,
+            stdin_buffer: None,
+            debuggee: None,
         }
     }
 
@@ -66,7 +65,6 @@ impl Execution {
         Ok(wasm_bytes)
     }
 
-    #[allow(dead_code)]
     pub async fn write_bytes(&self, path: &str, bytes: &[u8]) -> Result<(), std::io::Error> {
         let mut file = self
             .fs
@@ -116,9 +114,16 @@ impl<'a> Step<'a> {
         self
     }
 
-    /// Enable/disable debug mode for this step
-    pub fn debug(mut self, enable_debugging: bool) -> Self {
-        self.debug = enable_debugging;
+    /// Pipes a SharedArrayBuffer-backed ring buffer as this step's stdin.
+    pub fn stdin_buffer(mut self, buf: SharedArrayBuffer) -> Self {
+        self.stdin_buffer = Some(buf);
+        self
+    }
+
+    /// Attaches a pre-built [Debuggee] to this step. The caller is responsible
+    /// for instrumenting the binary so it matches the debuggee's [DebugInfo].
+    pub fn debuggee(mut self, debuggee: Debuggee) -> Self {
+        self.debuggee = Some(debuggee);
         self
     }
 
@@ -129,38 +134,11 @@ impl<'a> Step<'a> {
             return Err(RuntimeError::new("No binary specified"));
         };
 
-        /* In debug mode, we need to instrument the binary */
-        let mut debugger = None;
-
         let binary_bytes = if binary_loc.starts_with("/") {
-            let mut wasm = self
-                .exec
+            self.exec
                 .read_bytes(binary_loc)
                 .await
-                .ensure("Read binary from filesystem")?;
-
-            if self.debug {
-                WorkerOut::Artifact {
-                    data: &wasm,
-                    name: "pre.wasm".into(),
-                }
-                .send();
-
-                let InstrumenterResult {
-                    info,
-                    wasm: instrumented_wasm,
-                } = instrument_wasm(&wasm).ensure("Instrumented WASM")?;
-                debugger = Some(Debuggee::new(info));
-                wasm = instrumented_wasm;
-
-                WorkerOut::Artifact {
-                    data: &wasm,
-                    name: "post.wasm".into(),
-                }
-                .send();
-            }
-
-            wasm
+                .ensure("Read binary from filesystem")?
         } else {
             fetch_bytes(binary_loc)
                 .await
@@ -194,15 +172,18 @@ impl<'a> Step<'a> {
             .runtime(JsRuntime::instance())
             .fs(Box::new(self.exec.fs.clone()))
             .stdout(Box::new(Stdout::new(StdoutMode::Out)))
-            .stderr(Box::new(Stdout::new(StdoutMode::Err)))
-            .stdin(Box::new(Stdin::new(&self.exec.stdin_buffer)));
+            .stderr(Box::new(Stdout::new(StdoutMode::Err)));
+
+        if let Some(buf) = self.stdin_buffer.as_ref() {
+            builder = builder.stdin(Box::new(Stdin::new(buf)));
+        }
 
         builder
             .add_preopen_dir("/")
             .ensure("Preopened root directory")?;
 
         /* Instantiate and run the binary */
-        let instance = if let Some(debugger) = debugger {
+        let instance = if let Some(debugger) = self.debuggee {
             let wasi_env = builder.build().ensure("Built WASI environment")?;
             let mut wasi_func_env = WasiFunctionEnv::new(&mut store, wasi_env);
 

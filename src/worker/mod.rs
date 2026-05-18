@@ -1,10 +1,12 @@
 use console_error_panic_hook;
+use futures::channel::oneshot;
 use std::cell::RefCell;
 use std::path::PathBuf;
 use wasm_bindgen::prelude::*;
 use wasmer_wasix::virtual_fs::{AsyncWriteExt, FileSystem, create_dir_all, mem_fs};
 use web_sys::{DedicatedWorkerGlobalScope, MessageEvent};
 
+use crate::debug::instrument::{InstrumenterResult, instrument_wasm};
 use crate::types::{FsNode, WorkerOut, WorkerPrepare};
 
 mod debuggee;
@@ -12,6 +14,7 @@ mod execution;
 mod io;
 mod runtime;
 
+use debuggee::Debuggee;
 use execution::Execution;
 
 // ╭──────────────────────────────────────────────────────────────────────────╮
@@ -88,9 +91,17 @@ fn collect_dir_sources(
 // │ Worker                                                                   │
 // ╰──────────────────────────────────────────────────────────────────────────╯
 
-async fn start(prepare: WorkerPrepare) {
+/// The worker's full lifecycle: compile and link during the prepare phase,
+/// suspend on `run_rx` until the main thread sends `run`, then execute.
+async fn lifecycle(prepare: WorkerPrepare, run_rx: oneshot::Receiver<()>) {
+    let WorkerPrepare {
+        fs,
+        is_debug,
+        stdin_buffer,
+    } = prepare;
+
     let mut sources = Vec::new();
-    collect_dir_sources(&prepare.fs, &PathBuf::from("/"), &mut sources);
+    collect_dir_sources(&fs, &PathBuf::from("/"), &mut sources);
     sources.sort();
 
     assert!(
@@ -98,11 +109,11 @@ async fn start(prepare: WorkerPrepare) {
         "No C/C++ source files found in provided filesystem"
     );
 
-    let fs = create_user_fs(FsNode::Dir(prepare.fs))
+    let user_fs = create_user_fs(FsNode::Dir(fs))
         .await
         .expect("created user files filesystem");
 
-    let exec = Execution::new(prepare.stdin_buffer);
+    let exec = Execution::new();
 
     // Build clang args, conditional on is_debug
     let mut clang_args = vec![
@@ -130,7 +141,7 @@ async fn start(prepare: WorkerPrepare) {
         "/main.o",
     ];
 
-    if prepare.is_debug {
+    if is_debug {
         clang_args.push("-O0");
         // because of the -cc1 flag
         clang_args.push("-debug-info-kind=standalone");
@@ -146,7 +157,7 @@ async fn start(prepare: WorkerPrepare) {
         // from @yowasp
         .binary("https://fabioibanez.github.io/website/llvm.core.wasm")
         .sysroot("https://fabioibanez.github.io/website/llvm-resources.tar.gz")
-        .fs(Box::new(fs))
+        .fs(Box::new(user_fs))
         .args(&clang_args)
         .run()
         .await
@@ -187,13 +198,50 @@ async fn start(prepare: WorkerPrepare) {
         .send();
     }
 
-    let exit = exec
+    // In debug mode, instrument /main.wasm in place and build the Debuggee.
+    let debuggee = if is_debug {
+        let wasm = exec
+            .read_bytes("/main.wasm")
+            .await
+            .expect("read /main.wasm");
+        WorkerOut::Artifact {
+            data: &wasm,
+            name: "pre.wasm".into(),
+        }
+        .send();
+
+        let InstrumenterResult {
+            info,
+            wasm: instrumented,
+        } = instrument_wasm(&wasm).expect("instrument /main.wasm");
+
+        WorkerOut::Artifact {
+            data: &instrumented,
+            name: "post.wasm".into(),
+        }
+        .send();
+
+        exec.write_bytes("/main.wasm", &instrumented)
+            .await
+            .expect("write instrumented /main.wasm");
+
+        Some(Debuggee::new(info))
+    } else {
+        None
+    };
+
+    // Wait for the main thread to give us the go-ahead.
+    run_rx.await.expect("run signal");
+
+    let mut main_step = exec
         .step("main")
         .binary("/main.wasm")
-        .debug(prepare.is_debug)
-        .run()
-        .await
-        .expect("Running succeeded");
+        .stdin_buffer(stdin_buffer);
+    if let Some(d) = debuggee {
+        main_step = main_step.debuggee(d);
+    }
+
+    let exit = main_step.run().await.expect("Running succeeded");
 
     WorkerOut::Stop {
         exit_code: exit.raw(),
@@ -206,7 +254,8 @@ pub fn main() {
     console_error_panic_hook::set_once();
     let scope = DedicatedWorkerGlobalScope::from(JsValue::from(js_sys::global()));
 
-    let prepared: RefCell<Option<WorkerPrepare>> = RefCell::new(None);
+    // Holds the run-signal sender once `prepare` has spawned the lifecycle.
+    let run_tx: RefCell<Option<oneshot::Sender<()>>> = RefCell::new(None);
 
     // Function that gets called when the worker receives a message.
     // We dispatch on the `type` discriminator manually because internally‑tagged
@@ -222,12 +271,15 @@ pub fn main() {
             "prepare" => {
                 let p: WorkerPrepare =
                     serde_wasm_bindgen::from_value(data).expect("deserialize WorkerPrepare");
-                *prepared.borrow_mut() = Some(p);
+                let (tx, rx) = oneshot::channel();
+                *run_tx.borrow_mut() = Some(tx);
+                wasm_bindgen_futures::spawn_local(lifecycle(p, rx));
             }
             "run" => {
-                let p = prepared.borrow_mut().take().expect("Run before Prepare");
-                // rust-ism: spawn_local is used to run the start function in a new thread
-                wasm_bindgen_futures::spawn_local(start(p));
+                let tx = run_tx.borrow_mut().take().expect("Run before Prepare");
+                // Receiver may already be gone if the prepare phase failed
+                // and the lifecycle exited early; ignore the SendError.
+                let _ = tx.send(());
             }
             other => panic!("unknown WorkerIn type: {other}"),
         }
