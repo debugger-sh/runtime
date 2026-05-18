@@ -5,13 +5,14 @@ Use this tool to run end-to-end Debugger Adapter Protocol (DAP) integration test
 - Run all tests with `npm run tools:dap` (from repo root), or one test with `npm run tools:dap <test-name>`.
 - It is safe (and encouraged) to run this alongside `npm run dev`. This tool will wait for any in-progress builds initiated by `npm run dev` to complete before starting the tests.
 - The harness links the local package into `tools/dap` before running tests.
-- It executes scripted DAP request/response/event flows from `tools/dap/tests/*/dap.jsonc` against a real engine session (JSON with comments: `//` and `/* */`).
-- For triage, per-test artifacts/log outputs are written to `tools/dap/output/<test-name>/`, including emitted WASM files (`pre.wasm`, `post.wasm`) and derived dumps like `pre.wat`/`post.wat` (and `pre.dwarf` when `llvm-dwarfdump` is available).
+- It executes scripted DAP request/response/event flows from any `tools/dap/tests/**/dap.jsonc` against a real engine session (JSON with comments: `//` and `/* */`).
+- Tests can be nested (e.g. `tests/formatting/vector/`); a CLI name like `formatting` runs every test under that prefix.
+- For triage, per-test artifacts/log outputs are written to `tools/dap/output/<test-path>/`, including emitted WASM files (`pre.wasm`, `post.wasm`) and derived dumps like `pre.wat`/`post.wat` (and `pre.dwarf` when `llvm-dwarfdump` is available).
 - The command prints step-by-step progress and mismatch details to stdout, and exits non-zero on failures.
 
 ## Test Cases
 
-Each test is a directory under `tools/dap/tests/<test-name>/` with a required **`dap.jsonc`** scenario file:
+Each test is a directory under `tools/dap/tests/` (at any depth) with a required **`dap.jsonc`** scenario file:
 
 ```jsonc
 {
@@ -44,11 +45,11 @@ Each test is a directory under `tools/dap/tests/<test-name>/` with a required **
 
 ## Adding New Tests
 
-1. Create `tools/dap/tests/<new-test>/`.
+1. Create `tools/dap/tests/<path-to-test>/` (nested paths are fine).
 2. Add scenario input files needed by the engine in that folder (these are mounted into `engine.fs` for the test).
-3. Add `tools/dap/tests/<new-test>/dap.jsonc` with ordered `steps`.
+3. Add `dap.jsonc` with ordered `steps`.
 4. Start from an existing test and keep expectations minimal-but-specific (assert only fields that should be stable).
-5. Run `npm run tools:dap -- <new-test>`; inspect `tools/dap/output/<new-test>/` and console mismatch output when iterating.
+5. Run `npm run tools:dap -- <path-to-test>`; inspect `tools/dap/output/<path-to-test>/` and console mismatch output when iterating.
 
 ## Running Against `lldb-dap` (Golden Reference)
 

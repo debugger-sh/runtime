@@ -128,12 +128,47 @@ async function ensureEngineLinked() {
   await $`npm link debugger-sh`.cwd(HERE).quiet();
 }
 
+/** Relative path from `tools/dap/tests` using `/` (e.g. `formatting/string`). */
+function testId(...segments: string[]): string {
+  return path
+    .join(...segments)
+    .split(path.sep)
+    .join('/');
+}
+
+async function discoverTests(dir: string, prefix = ''): Promise<string[]> {
+  const tests: string[] = [];
+  const entries = (await readdir(dir, { withFileTypes: true })).sort((a, b) =>
+    a.name.localeCompare(b.name)
+  );
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const rel = prefix ? testId(prefix, entry.name) : entry.name;
+    const abs = path.join(dir, entry.name);
+    if (existsSync(path.join(abs, 'dap.jsonc'))) tests.push(rel);
+    tests.push(...(await discoverTests(abs, rel)));
+  }
+  return tests;
+}
+
 async function listTestNames(): Promise<string[]> {
-  const entries = await readdir(TESTS_DIR, { withFileTypes: true });
-  return entries
-    .filter((e) => e.isDirectory())
-    .map((e) => e.name)
-    .sort();
+  return discoverTests(TESTS_DIR);
+}
+
+function expandTestSelection(requested: string[], available: string[]): string[] {
+  const selected = new Set<string>();
+  for (const name of requested) {
+    const matches = available.filter((t) => t === name || t.startsWith(`${name}/`));
+    if (matches.length === 0) {
+      die(`unknown test '${name}'. Available: ${available.join(', ')}`);
+    }
+    for (const m of matches) selected.add(m);
+  }
+  return [...selected].sort();
+}
+
+function testDirFor(testName: string): string {
+  return path.join(TESTS_DIR, ...testName.split('/'));
 }
 
 async function waitForDevBuild() {
@@ -246,7 +281,7 @@ async function waitForEvent(
 }
 
 async function runTest(testName: string, opts: CliOpts): Promise<void> {
-  const testDir = path.join(TESTS_DIR, testName);
+  const testDir = testDirFor(testName);
   const testStat = await stat(testDir).catch(() => null);
   if (!testStat || !testStat.isDirectory()) throw new Error(`unknown test '${testName}'`);
 
@@ -254,7 +289,7 @@ async function runTest(testName: string, opts: CliOpts): Promise<void> {
   if (!existsSync(dapPath)) throw new Error(`missing ${dapPath}`);
   const file = await readJsonFile<TestFile>(dapPath);
   if (!Array.isArray(file.steps)) throw new Error(`${dapPath}: expected top-level steps[]`);
-  const testOutputDir = path.join(OUTPUT_DIR, testName);
+  const testOutputDir = path.join(OUTPUT_DIR, ...testName.split('/'));
   await rm(testOutputDir, { recursive: true, force: true });
   await mkdir(testOutputDir, { recursive: true });
 
@@ -378,14 +413,8 @@ async function main() {
   }
 
   const available = await listTestNames();
-  const tests = opts.tests.length ? opts.tests : available;
-  if (tests.length === 0) die(`no tests found in ${TESTS_DIR}`);
-
-  for (const test of tests) {
-    if (!available.includes(test)) {
-      die(`unknown test '${test}'. Available: ${available.join(', ')}`);
-    }
-  }
+  if (available.length === 0) die(`no tests found in ${TESTS_DIR}`);
+  const tests = opts.tests.length ? expandTestSelection(opts.tests, available) : available;
 
   const failed: { name: string; error: string }[] = [];
 
