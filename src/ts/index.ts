@@ -1,6 +1,6 @@
 import EventEmitter from 'events';
 
-import { StdoutMode, WorkerOut, WorkerStart } from '../../pkg/engine';
+import { StdoutMode, WorkerIn, WorkerOut } from '../../pkg/engine';
 import init from '../../pkg/engine';
 import wasmBinary from '../../pkg/engine_bg.wasm';
 import { Debugger } from './debugger';
@@ -112,12 +112,13 @@ export class Engine {
             resolve({ type: 'completed', exitCode: message.data.exit_code });
         });
 
-        const message: WorkerStart = {
+        worker.postMessage({
+          type: 'prepare',
           fs: this.fs,
           stdin_buffer: this.stdin[Internals].buffer,
           is_debug: this.debugger.enabled
-        };
-        worker.postMessage(message);
+        } satisfies WorkerIn);
+        worker.postMessage({ type: 'run' } satisfies WorkerIn);
       });
     } catch (err: unknown) {
       if (err === 'stopped') return { type: 'stopped' };

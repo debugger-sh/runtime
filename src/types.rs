@@ -63,13 +63,28 @@ pub enum FsNode {
     Dir(HashMap<String, FsNode>),
 }
 
+/// Wire contract for messages from the main thread to the worker.
+///
+/// Note: this enum exists for TS type generation only. Internally‑tagged
+/// serde enums buffer through a generic representation that is incompatible
+/// with `serde_wasm_bindgen::preserve` (used for `SharedArrayBuffer`), so the
+/// worker dispatches on `type` manually and deserializes the payload struct.
+#[derive(Debug, Tsify)]
+#[serde(tag = "type")]
+pub enum WorkerIn {
+    #[serde(rename = "prepare")]
+    Prepare(WorkerPrepare),
+    #[serde(rename = "run")]
+    Run,
+}
+
 #[derive(Debug, Tsify, Deserialize)]
-pub struct WorkerStart {
+pub struct WorkerPrepare {
     pub fs: HashMap<String, FsNode>,
+    pub is_debug: bool,
 
     #[serde(with = "serde_wasm_bindgen::preserve")]
     pub stdin_buffer: js_sys::SharedArrayBuffer,
-    pub is_debug: bool,
 }
 
 #[derive(Clone, Copy, Debug, Tsify, Serialize_repr)]

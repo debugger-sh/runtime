@@ -1,10 +1,11 @@
 use console_error_panic_hook;
+use std::cell::RefCell;
 use std::path::PathBuf;
 use wasm_bindgen::prelude::*;
 use wasmer_wasix::virtual_fs::{AsyncWriteExt, FileSystem, create_dir_all, mem_fs};
 use web_sys::{DedicatedWorkerGlobalScope, MessageEvent};
 
-use crate::types::{FsNode, WorkerOut, WorkerStart};
+use crate::types::{FsNode, WorkerOut, WorkerPrepare};
 
 mod debuggee;
 mod execution;
@@ -87,9 +88,9 @@ fn collect_dir_sources(
 // │ Worker                                                                   │
 // ╰──────────────────────────────────────────────────────────────────────────╯
 
-async fn start(msg: WorkerStart) {
+async fn start(prepare: WorkerPrepare) {
     let mut sources = Vec::new();
-    collect_dir_sources(&msg.fs, &PathBuf::from("/"), &mut sources);
+    collect_dir_sources(&prepare.fs, &PathBuf::from("/"), &mut sources);
     sources.sort();
 
     assert!(
@@ -97,11 +98,11 @@ async fn start(msg: WorkerStart) {
         "No C/C++ source files found in provided filesystem"
     );
 
-    let fs = create_user_fs(FsNode::Dir(msg.fs))
+    let fs = create_user_fs(FsNode::Dir(prepare.fs))
         .await
         .expect("created user files filesystem");
 
-    let exec = Execution::new(msg.stdin_buffer);
+    let exec = Execution::new(prepare.stdin_buffer);
 
     // Build clang args, conditional on is_debug
     let mut clang_args = vec![
@@ -129,7 +130,7 @@ async fn start(msg: WorkerStart) {
         "/main.o",
     ];
 
-    if msg.is_debug {
+    if prepare.is_debug {
         clang_args.push("-O0");
         // because of the -cc1 flag
         clang_args.push("-debug-info-kind=standalone");
@@ -189,7 +190,7 @@ async fn start(msg: WorkerStart) {
     let exit = exec
         .step("main")
         .binary("/main.wasm")
-        .debug(msg.is_debug)
+        .debug(prepare.is_debug)
         .run()
         .await
         .expect("Running succeeded");
@@ -205,11 +206,31 @@ pub fn main() {
     console_error_panic_hook::set_once();
     let scope = DedicatedWorkerGlobalScope::from(JsValue::from(js_sys::global()));
 
-    // Function that gets called when the worker receives a message
+    let prepared: RefCell<Option<WorkerPrepare>> = RefCell::new(None);
+
+    // Function that gets called when the worker receives a message.
+    // We dispatch on the `type` discriminator manually because internally‑tagged
+    // serde enums are incompatible with `serde_wasm_bindgen::preserve` (used
+    // for the `SharedArrayBuffer` inside `WorkerPrepare`).
     let onmessage = Closure::wrap(Box::new(move |msg: MessageEvent| {
-        let message: WorkerStart = serde_wasm_bindgen::from_value(msg.data()).expect("");
-        // rust-ism: spawn_local is used to run the start function in a new thread
-        wasm_bindgen_futures::spawn_local(start(message));
+        let data = msg.data();
+        let ty = js_sys::Reflect::get(&data, &JsValue::from_str("type"))
+            .expect("WorkerIn.type")
+            .as_string()
+            .expect("WorkerIn.type is a string");
+        match ty.as_str() {
+            "prepare" => {
+                let p: WorkerPrepare =
+                    serde_wasm_bindgen::from_value(data).expect("deserialize WorkerPrepare");
+                *prepared.borrow_mut() = Some(p);
+            }
+            "run" => {
+                let p = prepared.borrow_mut().take().expect("Run before Prepare");
+                // rust-ism: spawn_local is used to run the start function in a new thread
+                wasm_bindgen_futures::spawn_local(start(p));
+            }
+            other => panic!("unknown WorkerIn type: {other}"),
+        }
     }) as Box<dyn Fn(MessageEvent)>);
     scope.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
     onmessage.forget();
