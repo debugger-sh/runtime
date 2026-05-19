@@ -123,10 +123,6 @@ impl Variable {
         self.debugger.as_deref()
     }
 
-    pub(crate) fn debugger_reference(&self) -> WeakRef<Debugger> {
-        self.debugger.clone()
-    }
-
     pub fn name(&self) -> &str {
         &self.name
     }
